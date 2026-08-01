@@ -1,6 +1,6 @@
 {
   "name": "keepline",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Typed WebSocket client that keeps the line up: reconnection with jittered backoff, heartbeats and half-open detection, schema validation, reconnect-surviving subscriptions, and a real observability stream. ESM-first, zero dependencies, with React 19 bindings.",
   "keywords": [
     "websocket",

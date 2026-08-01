@@ -12,6 +12,7 @@ import type { KeeplineEvent } from '../src/core/types';
 import {
   MockWebSocket,
   flushMicrotasks,
+  installMockWebSocket,
   mockSocketFactory
 } from '../src/testing/mock-websocket';
 
@@ -672,5 +673,28 @@ describe('createSocket — teardown', () => {
     socket().acceptConnection();
 
     expect(instance.metrics.totalDowntimeMs).toBeGreaterThanOrEqual(500);
+  });
+});
+
+describe('installMockWebSocket', () => {
+  it('installs over a non-writable global and restores it exactly', () => {
+    // jsdom and happy-dom both define WebSocket as non-writable, which is what
+    // broke plain assignment.
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket');
+    Object.defineProperty(globalThis, 'WebSocket', {
+      value: class Sealed {},
+      writable: false,
+      configurable: true
+    });
+    const sealed = globalThis.WebSocket;
+
+    const { restore } = installMockWebSocket();
+    expect(globalThis.WebSocket).toBe(MockWebSocket);
+
+    restore();
+    expect(globalThis.WebSocket).toBe(sealed);
+
+    if (original) Object.defineProperty(globalThis, 'WebSocket', original);
+    else Reflect.deleteProperty(globalThis, 'WebSocket');
   });
 });

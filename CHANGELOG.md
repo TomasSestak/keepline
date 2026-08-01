@@ -1,5 +1,18 @@
 # keepline
 
+## 0.1.2
+
+**Fix: `installMockWebSocket` could not install in jsdom or happy-dom.**
+
+Both environments define `WebSocket` as a non-writable own property of the
+global, so the plain assignment threw `Cannot assign to read only property
+'WebSocket'` — in precisely the environments the helper exists for. It now
+installs with `Object.defineProperty` and restores the original descriptor
+verbatim, so a getter-backed or non-writable global goes back exactly as it
+was.
+
+Found by migrating a real application onto the package.
+
 ## 0.1.1
 
 **React Compiler compatibility.** Every hook and component in the package now

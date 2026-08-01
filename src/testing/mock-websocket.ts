@@ -198,6 +198,11 @@ export interface InstallOptions {
  * Replace `globalThis.WebSocket` with {@link MockWebSocket}.
  *
  * Returns a `restore` function — call it in `afterEach`.
+ *
+ * Installed with `defineProperty` rather than assignment: jsdom and happy-dom
+ * both define `WebSocket` as a non-writable own property of the global, so a
+ * plain assignment throws `Cannot assign to read only property 'WebSocket'` in
+ * exactly the environments this helper exists for.
  */
 export const installMockWebSocket = ({
   autoOpen = false
@@ -205,18 +210,24 @@ export const installMockWebSocket = ({
   restore: () => void;
   MockWebSocket: typeof MockWebSocket;
 } => {
-  const globals = globalThis as { WebSocket?: unknown };
-  const original = globals.WebSocket;
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket');
 
   MockWebSocket.reset();
   MockWebSocket.autoOpen = autoOpen;
-  globals.WebSocket = MockWebSocket;
+
+  Object.defineProperty(globalThis, 'WebSocket', {
+    value: MockWebSocket,
+    writable: true,
+    configurable: true,
+    enumerable: original?.enumerable ?? false
+  });
 
   return {
     restore: () => {
-      // Assigning `undefined` back is enough: `typeof WebSocket` reads
-      // 'undefined' either way, which is all any environment check looks at.
-      globals.WebSocket = original;
+      // Restore the original descriptor verbatim, so a getter-backed or
+      // non-writable global goes back exactly as it was.
+      if (original) Object.defineProperty(globalThis, 'WebSocket', original);
+      else Reflect.deleteProperty(globalThis, 'WebSocket');
       MockWebSocket.reset();
     },
     MockWebSocket
