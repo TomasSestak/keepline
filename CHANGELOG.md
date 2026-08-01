@@ -1,5 +1,32 @@
 # keepline
 
+## 0.1.1
+
+**React Compiler compatibility.** Every hook and component in the package now
+compiles cleanly — 11 of 11, zero bail-outs, enforced in CI by
+`bun run check:compiler`.
+
+The cause was the "latest ref" pattern: assigning `ref.current` during render
+breaks the Rules of React, and the compiler bails out of any hook that does it.
+Refs are now synced in an effect instead. Behaviour is unchanged — every ref
+here is only ever read from an asynchronous socket callback, never during
+render, so a one-commit lag is not observable.
+
+- `useSocket`, `useSocketMessage`, `useSocketEvent`, `useLastMessage`,
+  `useSocketSubscription` and `keepline/compat`'s `useWebSocket`: refs synced in
+  an effect rather than during render
+- `useSocketMetrics` and `useLastMessage`: options destructured in the body,
+  since a defaulted destructuring pattern in the parameter list defeats the
+  compiler's lowering pass
+- `keepline/compat`: the JSON branch in `lastJsonMessage` moved out of its
+  `try` block, which the compiler cannot yet lower
+- `SocketProvider`, `useSocketContext`, `useRequiredSocketContext`: declared as
+  functions rather than generic arrows, so the `.tsx` module parses under
+  Babel-based toolchains (in a `.tsx` file `<TIn = unknown>` is read as JSX)
+
+First release published through npm trusted publishing, so it carries a signed
+provenance attestation.
+
 ## 0.1.0
 
 Initial release.

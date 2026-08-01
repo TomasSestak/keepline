@@ -25,30 +25,36 @@ export interface SocketProviderProps<TIn = unknown, TOut = unknown> {
  * lifetime, which is usually what you want for the one socket an app is built
  * around.
  */
-export const SocketProvider = <TIn = unknown, TOut = unknown>({
+export function SocketProvider<TIn = unknown, TOut = unknown>({
   children,
   options,
   socket
-}: SocketProviderProps<TIn, TOut>) => {
+}: SocketProviderProps<TIn, TOut>) {
   const owned = useSocket<TIn, TOut>(options ?? { url: null });
   const value = (socket ?? owned.socket) as Socket<unknown, unknown> | null;
 
   return (
     <SocketContext.Provider value={value}>{children}</SocketContext.Provider>
   );
-};
+}
+
+// Declared as `function` rather than generic arrows: in a `.tsx` file Babel's
+// parser reads `<TIn = unknown, ...>` as JSX, so an arrow generic makes the
+// whole module unparseable for anyone running Babel over the source.
 
 /** The provided socket, or `null` before the provider's mount effect has run. */
-export const useSocketContext = <TIn = unknown, TOut = unknown>(): Socket<
+export function useSocketContext<TIn = unknown, TOut = unknown>(): Socket<
   TIn,
   TOut
-> | null => useContext(SocketContext) as Socket<TIn, TOut> | null;
+> | null {
+  return useContext(SocketContext) as Socket<TIn, TOut> | null;
+}
 
 /** As {@link useSocketContext}, but throws instead of returning null. */
-export const useRequiredSocketContext = <
+export function useRequiredSocketContext<
   TIn = unknown,
   TOut = unknown
->(): Socket<TIn, TOut> => {
+>(): Socket<TIn, TOut> {
   const socket = useContext(SocketContext);
   if (!socket) {
     throw new KeeplineError(
@@ -56,4 +62,4 @@ export const useRequiredSocketContext = <
     );
   }
   return socket as Socket<TIn, TOut>;
-};
+}

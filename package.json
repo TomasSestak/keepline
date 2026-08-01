@@ -1,6 +1,6 @@
 {
   "name": "keepline",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Typed WebSocket client that keeps the line up: reconnection with jittered backoff, heartbeats and half-open detection, schema validation, reconnect-surviving subscriptions, and a real observability stream. ESM-first, zero dependencies, with React 19 bindings.",
   "keywords": [
     "websocket",
@@ -104,13 +104,14 @@
     "build": "tsup && node scripts/postbuild.mjs",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
+    "check:compiler": "node scripts/react-compiler-check.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "size": "bun run build && size-limit",
-    "verify": "bun run lint && bun run typecheck && bun run test && bun run build",
+    "verify": "bun run lint && bun run typecheck && bun run check:compiler && bun run test && bun run build",
     "prepublishOnly": "bun run build",
     "release": "bun run build && changeset publish"
   },
@@ -123,6 +124,9 @@
     }
   },
   "devDependencies": {
+    "@babel/core": "^8.0.1",
+    "@babel/preset-react": "^8.0.1",
+    "@babel/preset-typescript": "^8.0.1",
     "@biomejs/biome": "^1.9.4",
     "@changesets/cli": "^2.27.9",
     "@size-limit/preset-small-lib": "^11.1.6",
@@ -130,6 +134,7 @@
     "@testing-library/react": "^16.1.0",
     "@types/react": "^19.0.0",
     "@vitest/coverage-v8": "^3.0.0",
+    "babel-plugin-react-compiler": "^1.0.0",
     "happy-dom": "^15.11.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

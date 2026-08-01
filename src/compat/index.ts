@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { constantBackoff } from '../core/backoff';
 import type { RawData, SendableData } from '../core/types';
@@ -92,7 +92,11 @@ export const useWebSocket = <TJson = unknown>(
 ): CompatResult<TJson> => {
   const [lastMessage, setLastMessage] = useState<MessageEvent | null>(null);
   const optionsRef = useRef(options);
-  optionsRef.current = options;
+  // Kept out of render so React Compiler can optimise this hook — see the same
+  // note in `useSocket`.
+  useEffect(() => {
+    optionsRef.current = options;
+  });
 
   const resolvedUrl = connect
     ? withQueryParams(url, options.queryParams)
@@ -176,10 +180,15 @@ export const useWebSocket = <TJson = unknown>(
 
   const lastJsonMessage = useMemo<TJson | null>(() => {
     if (lastMessage === null) return null;
+
+    // The branch is kept out of the `try` deliberately: React Compiler cannot
+    // yet lower a conditional expression inside a try/catch, and bails out of
+    // the whole hook when it meets one.
+    const { data } = lastMessage;
+    if (typeof data !== 'string') return data as TJson;
+
     try {
-      return typeof lastMessage.data === 'string'
-        ? (JSON.parse(lastMessage.data) as TJson)
-        : (lastMessage.data as TJson);
+      return JSON.parse(data) as TJson;
     } catch {
       return null;
     }

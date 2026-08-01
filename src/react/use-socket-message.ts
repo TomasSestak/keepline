@@ -19,7 +19,13 @@ export const useSocketMessage = <TIn>(
   handler: (message: TIn) => void
 ): void => {
   const handlerRef = useRef(handler);
-  handlerRef.current = handler;
+  // Synced in an effect rather than during render: writing to a ref while
+  // rendering breaks the Rules of React and makes React Compiler bail out of
+  // optimising this hook. Reading it is always asynchronous (a socket event),
+  // so a one-commit lag is not observable.
+  useEffect(() => {
+    handlerRef.current = handler;
+  });
 
   useEffect(() => {
     if (!socket) return;
@@ -33,7 +39,9 @@ export const useSocketEvent = <TIn, TOut>(
   handler: (event: KeeplineEvent<TIn, TOut>) => void
 ): void => {
   const handlerRef = useRef(handler);
-  handlerRef.current = handler;
+  useEffect(() => {
+    handlerRef.current = handler;
+  });
 
   useEffect(() => {
     if (!socket) return;
@@ -63,13 +71,16 @@ export interface UseLastMessageOptions<TIn, TSelected> {
  */
 export const useLastMessage = <TIn, TSelected = TIn>(
   socket: Socket<TIn, never> | Socket<TIn, unknown> | null,
-  { filter, selector }: UseLastMessageOptions<TIn, TSelected> = {}
+  options: UseLastMessageOptions<TIn, TSelected> = {}
 ): TSelected | null => {
+  const { filter, selector } = options;
   const [value, setValue] = useState<TSelected | null>(null);
   const filterRef = useRef(filter);
   const selectorRef = useRef(selector);
-  filterRef.current = filter;
-  selectorRef.current = selector;
+  useEffect(() => {
+    filterRef.current = filter;
+    selectorRef.current = selector;
+  });
 
   useEffect(() => {
     // A new socket identity means a new stream; the previous connection's last

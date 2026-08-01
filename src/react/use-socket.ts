@@ -91,7 +91,13 @@ export const useSocket = <TIn = unknown, TOut = unknown>(
   options: UseSocketOptions<TIn, TOut>
 ): UseSocketResult<TIn, TOut> => {
   const optionsRef = useRef(options);
-  optionsRef.current = options;
+  // Synced in an effect, not during render: a ref write while rendering breaks
+  // the Rules of React and makes React Compiler bail out of this hook. This
+  // effect is declared first, so it has already run by the time the connection
+  // effect below reads the ref on the same commit.
+  useEffect(() => {
+    optionsRef.current = options;
+  });
 
   if (options.share && !options.key && typeof options.url === 'function') {
     throw new KeeplineError(

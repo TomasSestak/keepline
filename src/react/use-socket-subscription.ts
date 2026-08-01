@@ -46,7 +46,9 @@ export const useSocketSubscription = <TOut>(
   deps?: readonly unknown[]
 ): void => {
   const specRef = useRef(spec);
-  specRef.current = spec;
+  useEffect(() => {
+    specRef.current = spec;
+  });
 
   const identity = deps ? JSON.stringify(deps) : identityOf(spec);
 

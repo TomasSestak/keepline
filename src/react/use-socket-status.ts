@@ -45,8 +45,11 @@ export interface UseSocketMetricsOptions {
  */
 export const useSocketMetrics = (
   socket: Socket<never, never> | Socket<unknown, unknown> | null,
-  { intervalMs = 1_000 }: UseSocketMetricsOptions = {}
+  // Destructuring with a default *inside* the parameter list defeats React
+  // Compiler's lowering pass, so the default is applied in the body instead.
+  options: UseSocketMetricsOptions = {}
 ): Readonly<SocketMetrics> | null => {
+  const intervalMs = options.intervalMs ?? 1_000;
   const [snapshot, setSnapshot] = useState<Readonly<SocketMetrics> | null>(
     () => (socket ? { ...socket.metrics } : null)
   );
