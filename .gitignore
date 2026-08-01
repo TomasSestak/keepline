@@ -1,0 +1,18 @@
+node_modules/
+dist/
+dist-types/
+coverage/
+*.tsbuildinfo
+
+.DS_Store
+*.log
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Local AI/editor assistant config — machine-specific, never part of the package
+.claude/
+.cursor/
+.aider*
+CLAUDE.md
+AGENTS.md

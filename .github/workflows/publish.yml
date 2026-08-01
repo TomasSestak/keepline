@@ -1,0 +1,96 @@
+name: Publish
+
+# Publishes to npm using trusted publishing (OIDC) — no NPM_TOKEN, no
+# long-lived credential anywhere in this repository.
+#
+# One-time setup on npmjs.com (Package → Settings → Trusted Publisher):
+#   Organization or user : TomasSestak
+#   Repository           : keepline
+#   Workflow filename    : publish.yml     <- must match this file's name exactly
+#   Environment          : (leave blank, or "npm" if you enable the job's
+#                           `environment:` line below)
+#   Allowed actions      : npm publish
+#
+# Caveat worth knowing: npm will not let you configure a trusted publisher for a
+# package that does not exist yet, so OIDC cannot perform a package's *first*
+# publish. Ship 0.1.0 once with a token (or interactively), then wire this up —
+# every release after that goes through OIDC with automatic provenance.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Pack and validate without publishing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  # The OIDC token npm exchanges for a short-lived publish credential. Without
+  # this, `npm publish` falls back to looking for a token and fails.
+  id-token: write
+
+concurrency: publish-${{ github.ref }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Optional hardening: uncomment, create the environment in repo settings with
+    # required reviewers, and set the same name in the npm trusted publisher
+    # config. Then a publish needs a human approval.
+    # environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      # `bun publish` does not implement the OIDC exchange, so the publish step
+      # runs on npm even though everything else in this repo uses bun.
+      # Trusted publishing needs Node >= 22.14.0 and npm >= 11.5.1.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run verify
+
+      - name: Check the release tag matches package.json
+        if: github.event_name == 'release'
+        run: |
+          PKG="$(node -p "require('./package.json').version")"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$PKG" != "$TAG" ]; then
+            echo "::error::package.json is $PKG but the release tag is $TAG"
+            exit 1
+          fi
+          echo "Publishing version $PKG"
+
+      - name: Fail early if this version is already on npm
+        run: |
+          NAME="$(node -p "require('./package.json').name")"
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::$NAME@$VERSION is already published — bump the version"
+            exit 1
+          fi
+
+      - name: Publish (dry run)
+        if: inputs.dry-run
+        run: npm publish --dry-run
+
+      # No NODE_AUTH_TOKEN: the credential comes from the OIDC exchange, and
+      # provenance is generated automatically for trusted publishes.
+      - name: Publish
+        if: ${{ !inputs.dry-run }}
+        run: npm publish
