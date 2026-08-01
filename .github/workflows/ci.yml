@@ -31,8 +31,13 @@ jobs:
           bun-version-file: package.json
 
       - run: bun install --frozen-lockfile
+      # Kept as separate steps rather than `bun run verify` so a failure names
+      # its stage in the Actions UI. Every stage of `verify` must appear here —
+      # `check:compiler` was missed once already, which left the React Compiler
+      # guard running only at publish time.
       - run: bun run lint
       - run: bun run typecheck
+      - run: bun run check:compiler
       - run: bun run test
       - run: bun run build
 
