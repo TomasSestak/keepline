@@ -1,13 +1,37 @@
-# keepline
+<h1 align="center">keepline</h1>
 
-**The line stays up.**
+<p align="center">
+  <strong>The line stays up.</strong>
+</p>
 
-A typed WebSocket client that handles the parts everyone re-implements: reconnection with jittered backoff, half-open detection, an outbound queue, subscriptions that survive a reconnect, schema-validated inbound messages, and an event stream you can wire straight into Sentry.
+<p align="center">
+  A typed WebSocket client for automatic reconnection, half-open detection, outbound queuing,<br />
+  reconnect-safe subscriptions, schema validation, and observability — with first-class React bindings.
+</p>
 
-Zero dependencies. ESM-first with working CJS. Framework-agnostic core, with React bindings built on `useSyncExternalStore`.
+<p align="center">
+  <a href="https://www.npmjs.com/package/keepline"><img src="https://img.shields.io/npm/v/keepline?style=flat-square&amp;color=CB3837" alt="npm version" /></a>
+  <a href="https://github.com/TomasSestak/keepline/actions/workflows/ci.yml"><img src="https://github.com/TomasSestak/keepline/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" /></a>
+  <a href="#what-you-get"><img src="https://img.shields.io/badge/core-%3C5_kB_brotli-0f766e?style=flat-square" alt="Core bundle under 5 kB brotli" /></a>
+  <a href="https://github.com/TomasSestak/keepline/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/keepline?style=flat-square&amp;color=0f766e" alt="MIT license" /></a>
+</p>
+
+<p align="center">
+  <sub>Dependency-free core · ESM + CJS · React 18+ · Node.js 18+</sub>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a>
+  ·
+  <a href="#what-you-get">Features</a>
+  ·
+  <a href="#entry-points">Entry points</a>
+  ·
+  <a href="./MIGRATION.md">Migration</a>
+</p>
 
 ```bash
-npm install keepline   # or: bun add / yarn add / pnpm add
+npm install keepline
 ```
 
 ## Why
