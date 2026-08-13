@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="96" viewBox="0 0 160 96" fill="none">
+  <title>keepline connection mark</title>
+  <defs>
+    <linearGradient id="line" x1="18" y1="48" x2="142" y2="48" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FB7185" />
+      <stop offset="0.5" stop-color="#FBBF24" />
+      <stop offset="1" stop-color="#2DD4BF" />
+    </linearGradient>
+    <filter id="glow" x="8" y="8" width="144" height="80" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="4" />
+    </filter>
+  </defs>
+
+  <rect x="1" y="1" width="158" height="94" rx="24" fill="#0D1117" />
+  <rect x="1" y="1" width="158" height="94" rx="24" stroke="#30363D" stroke-width="2" />
+
+  <path
+    d="M24 48H55L66 29L82 67L96 38L105 48H136"
+    stroke="url(#line)"
+    stroke-width="10"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    opacity="0.2"
+    filter="url(#glow)"
+  />
+  <path
+    d="M24 48H55L66 29L82 67L96 38L105 48H136"
+    stroke="url(#line)"
+    stroke-width="6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <circle cx="24" cy="48" r="6" fill="#FB7185" />
+  <circle cx="136" cy="48" r="6" fill="#2DD4BF" />
+</svg>

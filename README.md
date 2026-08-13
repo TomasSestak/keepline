@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/TomasSestak/keepline/main/assets/keepline-mark.svg" width="160" height="96" alt="" />
+</p>
+
 <h1 align="center">keepline</h1>
 
 <p align="center">
