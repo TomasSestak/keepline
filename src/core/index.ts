@@ -47,6 +47,8 @@ export { formatIssues } from './standard-schema';
 export type { StandardSchemaV1 } from './standard-schema';
 
 export type {
+  AbortSignalLike,
+  BinaryBlob,
   CloseContext,
   DropReason,
   ErrorPhase,
@@ -54,6 +56,9 @@ export type {
   KeeplineEvent,
   KeeplineEventPayload,
   OpenContext,
+  PlatformAbortSignal,
+  PlatformBlob,
+  PlatformWebSocket,
   ProtocolsInput,
   ProtocolsResolver,
   RawData,
@@ -70,5 +75,7 @@ export type {
   SubscriptionSpec,
   Unsubscribe,
   UrlInput,
-  UrlResolver
+  UrlResolver,
+  WebSocketBinaryType,
+  WebSocketLike
 } from './types';

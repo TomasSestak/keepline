@@ -9,7 +9,9 @@
 
 `keepline/compat` keeps the same call signature — `useWebSocket(url, options, connect)` — and returns the same shape: `sendMessage`, `sendJsonMessage`, `lastMessage`, `lastJsonMessage`, `readyState`, `getWebSocket`. A default export is provided too, so `import useWebSocket from 'keepline/compat'` also works.
 
-Supported options: `onOpen`, `onClose`, `onError`, `onMessage`, `onReconnectStop`, `shouldReconnect`, `reconnectInterval`, `reconnectAttempts`, `filter`, `retryOnError`, `protocols`, `share`, `heartbeat`, `queryParams`.
+Callback values are native `Event`, `MessageEvent`, and `CloseEvent` objects in browsers, but they are created for the callback rather than dispatched through an `EventTarget`; their `target` and `currentTarget` therefore remain `null`, and `isTrusted` is `false`.
+
+Supported options: `onOpen`, `onClose`, `onError`, `onMessage`, `onReconnectStop`, `shouldReconnect`, `reconnectInterval`, `reconnectAttempts`, `filter`, `retryOnError`, `protocols`, `share`, `heartbeat`, `queryParams`, and an explicit `key` for shared URL resolvers.
 
 ## Behavioural differences to know about
 
@@ -18,12 +20,12 @@ These are deliberate. Each one is a bug in the old default rather than a missing
 | | `react-use-websocket` | `keepline/compat` |
 | --- | --- | --- |
 | **Reconnect delay** | `reconnectInterval` exactly, no jitter | Your `reconnectInterval` is honoured exactly (number or function). Direct `keepline/react` use defaults to jittered exponential backoff. |
-| **Auth failures** | Retried like any other close | **Never retried.** A 1008/3000/4001/4401/4403 close stops retrying regardless of `shouldReconnect`. |
-| **Protocol errors** | Retried | Not retried (1002, 1003, 1007, 1009, 1010, 1015). |
+| **Auth failures** | Retried like any other close | Not retried by default. An explicit `shouldReconnect` can override the default after your app refreshes credentials. |
+| **Protocol errors** | Retried | Not retried by default (1002, 1003, 1007, 1009, 1010, 1015); an explicit policy can override. |
 | **Handshake that hangs** | Waits for the browser | Abandoned after 10s and retried. |
 | **`heartbeat.timeout`** | Closes the socket after N ms of silence | Forces a reconnect after N ms without a pong. Same intent, and it also detects a half-open socket. |
 | **Sends before open** | Dropped unless `keep` was used | Queued (bounded, 64 items) and flushed in order on open. `keep: false` keeps its meaning: the message is dropped instead of queued. |
-| **Malformed JSON** | `lastJsonMessage` becomes `null` | Same, plus a `decode-error` event you can report. |
+| **Malformed JSON** | `lastJsonMessage` becomes `null` | Same; the compatibility hook keeps the raw `MessageEvent` available as `lastMessage`. |
 
 ## Step 2 — move call sites to `keepline/react`
 

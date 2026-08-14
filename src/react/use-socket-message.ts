@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import type { KeeplineEvent, Socket } from '../core/types';
+import { useIsomorphicInsertionEffect } from './use-isomorphic-layout-effect';
 
 /**
  * Run a handler for every inbound message, without re-rendering.
@@ -19,13 +20,12 @@ export const useSocketMessage = <TIn>(
   handler: (message: TIn) => void
 ): void => {
   const handlerRef = useRef(handler);
-  // Synced in an effect rather than during render: writing to a ref while
-  // rendering breaks the Rules of React and makes React Compiler bail out of
-  // optimising this hook. Reading it is always asynchronous (a socket event),
-  // so a one-commit lag is not observable.
-  useEffect(() => {
+  // Insertion timing keeps the latest handler visible even when a descendant
+  // layout effect synchronously drives a test transport in the same commit.
+  // Writing during render would break the Rules of React and compiler support.
+  useIsomorphicInsertionEffect(() => {
     handlerRef.current = handler;
-  });
+  }, [handler]);
 
   useEffect(() => {
     if (!socket) return;
@@ -39,9 +39,9 @@ export const useSocketEvent = <TIn, TOut>(
   handler: (event: KeeplineEvent<TIn, TOut>) => void
 ): void => {
   const handlerRef = useRef(handler);
-  useEffect(() => {
+  useIsomorphicInsertionEffect(() => {
     handlerRef.current = handler;
-  });
+  }, [handler]);
 
   useEffect(() => {
     if (!socket) return;
@@ -74,18 +74,21 @@ export const useLastMessage = <TIn, TSelected = TIn>(
   options: UseLastMessageOptions<TIn, TSelected> = {}
 ): TSelected | null => {
   const { filter, selector } = options;
-  const [value, setValue] = useState<TSelected | null>(null);
+  const [snapshot, setSnapshot] = useState<{
+    socket: typeof socket;
+    value: TSelected | null;
+  }>(() => ({ socket, value: null }));
   const filterRef = useRef(filter);
   const selectorRef = useRef(selector);
-  useEffect(() => {
+  useIsomorphicInsertionEffect(() => {
     filterRef.current = filter;
     selectorRef.current = selector;
-  });
+  }, [filter, selector]);
 
   useEffect(() => {
     // A new socket identity means a new stream; the previous connection's last
     // message must not linger as if it came from this one.
-    setValue(null);
+    setSnapshot({ socket, value: null });
     if (!socket) return;
 
     return socket.onMessage((message) => {
@@ -94,9 +97,13 @@ export const useLastMessage = <TIn, TSelected = TIn>(
         ? selectorRef.current(message)
         : (message as unknown as TSelected);
 
-      setValue((previous) => (Object.is(previous, next) ? previous : next));
+      setSnapshot((previous) =>
+        previous.socket === socket && Object.is(previous.value, next)
+          ? previous
+          : { socket, value: next }
+      );
     });
   }, [socket]);
 
-  return value;
+  return snapshot.socket === socket ? snapshot.value : null;
 };

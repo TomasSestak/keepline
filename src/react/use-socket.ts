@@ -3,9 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { createSocket } from '../core/create-socket';
-import { KeeplineError } from '../core/errors';
+import { KeeplineError, ValidationError } from '../core/errors';
 import { acquireSharedSocket } from '../core/shared';
+import { formatIssues } from '../core/standard-schema';
 import type {
+  ErrorPhase,
+  KeeplineEvent,
   RequestOptions,
   SendableData,
   Socket,
@@ -13,6 +16,8 @@ import type {
   SubscriptionSpec,
   Unsubscribe
 } from '../core/types';
+import { identityOfList } from './identity';
+import { useIsomorphicInsertionEffect } from './use-isomorphic-layout-effect';
 import { useSocketStatus } from './use-socket-status';
 
 export interface UseSocketOptions<TIn = unknown, TOut = unknown>
@@ -53,21 +58,23 @@ export interface UseSocketResult<TIn = unknown, TOut = unknown> {
   reconnect: () => void;
 }
 
-const stableStringify = (value: unknown): string => {
-  try {
-    return JSON.stringify(value) ?? 'undefined';
-  } catch {
-    return String(value);
-  }
-};
-
 const deriveIdentity = <TIn, TOut>(
   options: UseSocketOptions<TIn, TOut>
 ): string => {
-  if (options.key) return `key:${options.key}`;
+  // Disabled is a lifecycle dimension of its own. A stable explicit key must
+  // not mask a transition to `url: null`, otherwise the old lease stays live.
+  if (options.url == null) return 'disabled';
+  if (options.key !== undefined) return `key:${options.key}`;
   if (typeof options.url === 'string') return `url:${options.url}`;
-  if (options.url == null) return 'url:none';
   return 'resolver';
+};
+
+const protocolsIdentity = (protocols: SocketOptions['protocols']): string => {
+  if (typeof protocols === 'function') return 'resolver';
+  if (protocols === undefined) return 'none';
+  return Array.isArray(protocols)
+    ? `list:${JSON.stringify(protocols)}`
+    : `value:${protocols}`;
 };
 
 /**
@@ -91,34 +98,83 @@ export const useSocket = <TIn = unknown, TOut = unknown>(
   options: UseSocketOptions<TIn, TOut>
 ): UseSocketResult<TIn, TOut> => {
   const optionsRef = useRef(options);
-  // Synced in an effect, not during render: a ref write while rendering breaks
-  // the Rules of React and makes React Compiler bail out of this hook. This
-  // effect is declared first, so it has already run by the time the connection
-  // effect below reads the ref on the same commit.
-  useEffect(() => {
+  // Insertion timing closes the window in which a descendant layout effect can
+  // synchronously drive a test transport with the previous callbacks.
+  useIsomorphicInsertionEffect(() => {
     optionsRef.current = options;
-  });
+  }, [options]);
 
-  if (options.share && !options.key && typeof options.url === 'function') {
+  if (
+    options.share &&
+    options.key === undefined &&
+    (typeof options.url === 'function' ||
+      typeof options.protocols === 'function')
+  ) {
     throw new KeeplineError(
-      'share: true with a resolver `url` needs a `key`. A resolver is opaque, so without one every such hook would silently share a single connection.'
+      'share: true with a resolver `url` or `protocols` needs a `key`. A resolver is opaque, so without one unrelated hooks could silently share a connection.'
     );
   }
 
-  const [socket, setSocket] = useState<Socket<TIn, TOut> | null>(null);
+  const identity = JSON.stringify([
+    deriveIdentity(options),
+    protocolsIdentity(options.protocols),
+    identityOfList(options.resetKeys),
+    options.share ? 'shared' : 'own'
+  ]);
+  const [socketSnapshot, setSocketSnapshot] = useState<{
+    identity: string;
+    socket: Socket<TIn, TOut> | null;
+  }>(() => ({ identity, socket: null }));
+  const socket =
+    socketSnapshot.identity === identity ? socketSnapshot.socket : null;
   const socketRef = useRef<Socket<TIn, TOut> | null>(null);
+  const socketIdentityRef = useRef(identity);
 
-  const identity = `${deriveIdentity(options)}|${stableStringify(
-    typeof options.protocols === 'function' ? 'resolver' : options.protocols
-  )}|${stableStringify(options.resetKeys)}|${options.share ? 'shared' : 'own'}`;
+  // The connection effect changes resources after layout effects. Invalidate
+  // the old imperative handle earlier so a descendant layout effect in this
+  // commit cannot send through the previous identity.
+  useIsomorphicInsertionEffect(() => {
+    if (socketIdentityRef.current === identity) return;
+    socketIdentityRef.current = identity;
+    socketRef.current = null;
+  }, [identity]);
 
   useEffect(() => {
     const current = optionsRef.current;
 
-    // Every handler delegates through the ref, so the socket never has to be
-    // recreated just because a caller passed a new closure this render.
+    // A literal null URL means disabled, not an idle Socket facade. Besides
+    // making the result truthful, this ensures a keyed connection is released
+    // when its enable flag turns off.
+    if (current.url == null) {
+      socketRef.current = null;
+      setSocketSnapshot({ identity, socket: null });
+      return;
+    }
+
+    const notifyError = (error: unknown, phase: ErrorPhase): void => {
+      const handler = optionsRef.current.onError;
+      if (!handler) return;
+      try {
+        handler(error, phase);
+      } catch {
+        // A throwing error handler is not worth a second error.
+      }
+    };
+
+    const invoke = (callback: () => void): void => {
+      try {
+        callback();
+      } catch (error) {
+        notifyError(error, 'listener');
+      }
+    };
+
+    // Connection behaviour belongs to the physical socket. Consumer callbacks
+    // are attached per lease below, so every `share: true` hook receives events
+    // and an unmounted hook can detach without affecting the other leases.
     const socketOptions: SocketOptions<TIn, TOut> = {
       ...current,
+      autoConnect: false,
       // Literals are passed through rather than wrapped, so the core keeps its
       // synchronous connect path: wrapping everything in a resolver would defer
       // every connection by a microtask for no reason.
@@ -136,28 +192,93 @@ export const useSocket = <TIn = unknown, TOut = unknown>(
               return typeof protocols === 'function' ? protocols() : protocols;
             }
           : current.protocols,
-      onOpen: (context) => optionsRef.current.onOpen?.(context),
-      onMessage: (message) => optionsRef.current.onMessage?.(message),
-      onClose: (context) => optionsRef.current.onClose?.(context),
-      onError: (error, phase) => optionsRef.current.onError?.(error, phase),
-      onEvent: (event) => optionsRef.current.onEvent?.(event)
+      onOpen: undefined,
+      onMessage: undefined,
+      onClose: undefined,
+      onError: undefined,
+      onEvent: undefined
+    };
+
+    const bindCallbacks = (instance: Socket<TIn, TOut>): Unsubscribe => {
+      const offMessage = instance.onMessage((message) => {
+        invoke(() => optionsRef.current.onMessage?.(message));
+      });
+
+      const offEvent = instance.onEvent((event: KeeplineEvent<TIn, TOut>) => {
+        invoke(() => optionsRef.current.onEvent?.(event));
+
+        switch (event.type) {
+          case 'open':
+            invoke(() =>
+              optionsRef.current.onOpen?.({
+                url: event.url,
+                attempt: event.attempt,
+                reconnected: event.reconnected,
+                send: event.send
+              })
+            );
+            break;
+          case 'close': {
+            invoke(() =>
+              optionsRef.current.onClose?.({
+                code: event.code,
+                reason: event.reason,
+                wasClean: event.wasClean,
+                category: event.category,
+                willReconnect: event.willReconnect
+              })
+            );
+            break;
+          }
+          case 'error':
+            notifyError(event.error, event.phase);
+            break;
+          case 'decode-error':
+            notifyError(event.error, 'socket');
+            break;
+          case 'validation-error':
+            notifyError(
+              new ValidationError(formatIssues(event.issues), event.issues),
+              'socket'
+            );
+            break;
+        }
+      });
+
+      return () => {
+        offEvent();
+        offMessage();
+      };
     };
 
     if (current.share) {
       const lease = acquireSharedSocket<TIn, TOut>(identity, () =>
         createSocket<TIn, TOut>(socketOptions)
       );
-      socketRef.current = lease.socket;
-      setSocket(lease.socket);
-      return lease.release;
+      const instance = lease.socket;
+      const unbind = bindCallbacks(instance);
+      socketRef.current = instance;
+      socketIdentityRef.current = identity;
+      setSocketSnapshot({ identity, socket: instance });
+      if (current.autoConnect !== false) instance.connect();
+
+      return () => {
+        unbind();
+        if (socketRef.current === instance) socketRef.current = null;
+        lease.release();
+      };
     }
 
     const instance = createSocket<TIn, TOut>(socketOptions);
+    const unbind = bindCallbacks(instance);
     socketRef.current = instance;
-    setSocket(instance);
+    socketIdentityRef.current = identity;
+    setSocketSnapshot({ identity, socket: instance });
+    if (current.autoConnect !== false) instance.connect();
 
     return () => {
-      socketRef.current = null;
+      unbind();
+      if (socketRef.current === instance) socketRef.current = null;
       instance.destroy();
     };
   }, [identity]);

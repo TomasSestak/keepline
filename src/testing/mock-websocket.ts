@@ -187,7 +187,7 @@ export class MockWebSocket {
 
 /** Use the mock for one socket without touching globals. */
 export const mockSocketFactory: SocketFactory = (url, protocols) =>
-  new MockWebSocket(url, protocols) as unknown as WebSocket;
+  new MockWebSocket(url, protocols);
 
 export interface InstallOptions {
   /** Open every new socket automatically. Default false. */

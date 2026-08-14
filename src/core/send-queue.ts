@@ -73,4 +73,14 @@ export class SendQueue<T> {
   clear(): T[] {
     return this.drain();
   }
+
+  /** Remove one exact queued item without disturbing FIFO order. */
+  remove(item: T): boolean {
+    const index = this.items.findIndex((candidate) =>
+      Object.is(candidate, item)
+    );
+    if (index === -1) return false;
+    this.items.splice(index, 1);
+    return true;
+  }
 }

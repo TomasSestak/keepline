@@ -49,4 +49,15 @@ describe('SendQueue', () => {
     expect(queue.push(1).accepted).toBe(false);
     expect(queue.size).toBe(0);
   });
+
+  it('removes one exact item without reordering the rest', () => {
+    const queue = new SendQueue<number>({ limit: 4 });
+    queue.push(1);
+    queue.push(2);
+    queue.push(3);
+
+    expect(queue.remove(2)).toBe(true);
+    expect(queue.remove(2)).toBe(false);
+    expect(queue.drain()).toEqual([1, 3]);
+  });
 });

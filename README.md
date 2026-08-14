@@ -16,7 +16,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/keepline"><img src="https://img.shields.io/npm/v/keepline?style=flat-square&amp;color=CB3837" alt="npm version" /></a>
   <a href="https://github.com/TomasSestak/keepline/actions/workflows/ci.yml"><img src="https://github.com/TomasSestak/keepline/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" /></a>
-  <a href="#what-you-get"><img src="https://img.shields.io/badge/core-%3C5_kB_brotli-0f766e?style=flat-square" alt="Core bundle under 5 kB brotli" /></a>
+  <a href="#what-you-get"><img src="https://img.shields.io/badge/core-%E2%89%A46_kB_brotli-0f766e?style=flat-square" alt="Core bundle at most 6 kB brotli" /></a>
   <a href="https://github.com/TomasSestak/keepline/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/keepline?style=flat-square&amp;color=0f766e" alt="MIT license" /></a>
 </p>
 
@@ -112,7 +112,7 @@ const socket = createSocket({
 | **Sharing** | `share: true` or `<SocketProvider>`; reference-counted with a grace period so StrictMode and route transitions don't churn the connection |
 | **SSR** | No-ops without a `WebSocket` global. No guards, no dynamic imports |
 
-Core is **4.7 kB** brotli, React bindings **5.9 kB**, enforced in CI.
+Core is **5.9 kB** brotli, React bindings **7.8 kB**, with **6 kB / 8 kB budgets enforced in CI**.
 
 ## Entry points
 
@@ -120,7 +120,7 @@ Core is **4.7 kB** brotli, React bindings **5.9 kB**, enforced in CI.
 | --- | --- |
 | `keepline` | `createSocket`, backoff strategies, close-code helpers, errors. No React. |
 | `keepline/react` | `useSocket`, `useSocketStatus`, `useSocketMessage`, `useLastMessage`, `useSocketSubscription`, `useSocketMetrics`, `SocketProvider` |
-| `keepline/compat` | Drop-in `useWebSocket` shaped like `react-use-websocket` — see [MIGRATION.md](./MIGRATION.md) |
+| `keepline/compat` | Migration-focused `useWebSocket` shaped like `react-use-websocket` — see [MIGRATION.md](./MIGRATION.md) |
 | `keepline/testing` | `MockWebSocket`, `installMockWebSocket`, `mockSocketFactory` |
 | `keepline/sentry` | `createSentryReporter` — breadcrumbs and exceptions, no `@sentry/*` dependency |
 | `keepline/logger` | `createConsoleLogger` |
@@ -129,7 +129,7 @@ Core is **4.7 kB** brotli, React bindings **5.9 kB**, enforced in CI.
 
 ### Auth with short-lived tokens
 
-A resolver runs on *every* attempt, so the token is fresh at connect time — including the reconnect three minutes after the tab was opened. Auth failures (1008, 4001, 4401, ...) are never retried, so rejected credentials do not loop.
+A resolver runs on *every* attempt, so the token is fresh at connect time — including the reconnect three minutes after the tab was opened. Auth failures (1008, 4001, 4401, ...) are not retried by default, so rejected credentials do not loop. An explicit `shouldReconnect` policy can override that default after your application refreshes the credentials.
 
 ```ts
 const socket = createSocket({
@@ -170,6 +170,8 @@ const reply = await socket.request(
 
 Sent while down? The payload queues, flushes on open, and the promise still resolves when the reply arrives — or rejects with `RequestTimeoutError`, `ConnectionClosedError`, or `GaveUpError`, so the failure mode is always a typed error, never a hang.
 
+If it rejects before opening, its queued payload is removed too — a timed-out or aborted request is never sent later as a stale side effect.
+
 ### A status badge users can believe
 
 `status` distinguishes a blip from an outage, which `readyState` cannot:
@@ -203,11 +205,12 @@ Node 22+ has a global `WebSocket`, so nothing changes. On older Node, hand in [`
 
 ```ts
 import WebSocket from 'ws';
+import type { WebSocketLike } from 'keepline';
 
 const socket = createSocket({
   url: 'wss://api.example.com/feed',
   socketFactory: (url, protocols) =>
-    new WebSocket(url, protocols) as unknown as globalThis.WebSocket
+    new WebSocket(url, protocols) as unknown as WebSocketLike
 });
 
 await socket.waitForOpen();

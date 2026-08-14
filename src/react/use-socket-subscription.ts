@@ -3,18 +3,16 @@
 import { useEffect, useRef } from 'react';
 
 import type { Socket, SubscriptionSpec } from '../core/types';
+import { identityOfList, structuralIdentityOf } from './identity';
+import { useIsomorphicInsertionEffect } from './use-isomorphic-layout-effect';
 
 const identityOf = (
   spec: SubscriptionSpec<unknown> | null | undefined
 ): string => {
   if (!spec) return 'none';
-  if (spec.key) return `key:${spec.key}`;
+  if (spec.key !== undefined) return `key:${spec.key}`;
   if (typeof spec.subscribe === 'function') return 'factory';
-  try {
-    return JSON.stringify(spec.subscribe) ?? 'undefined';
-  } catch {
-    return String(spec.subscribe);
-  }
+  return structuralIdentityOf(spec.subscribe);
 };
 
 /**
@@ -36,9 +34,10 @@ const identityOf = (
  * } : null);
  * ```
  *
- * Identity is derived from `key`, or from `JSON.stringify(subscribe)` when no
- * key is given — so an inline object literal does not thrash. Pass `deps` to
- * control it explicitly (required when `subscribe` is a factory function).
+ * Identity is derived from `key`, or from a structural JSON token for the
+ * subscribe payload when no key is given — so an inline object literal does
+ * not thrash. Cyclic/non-JSON payloads fall back to reference identity. Pass
+ * `deps` to control it explicitly (required for a factory function).
  */
 export const useSocketSubscription = <TOut>(
   socket: Socket<never, TOut> | Socket<unknown, TOut> | null,
@@ -46,11 +45,11 @@ export const useSocketSubscription = <TOut>(
   deps?: readonly unknown[]
 ): void => {
   const specRef = useRef(spec);
-  useEffect(() => {
+  useIsomorphicInsertionEffect(() => {
     specRef.current = spec;
-  });
+  }, [spec]);
 
-  const identity = deps ? JSON.stringify(deps) : identityOf(spec);
+  const identity = deps ? identityOfList(deps) : identityOf(spec);
 
   // `identity` stands in for `spec` deliberately: depending on `spec` itself
   // would send an unsubscribe/subscribe pair to the server on every render that

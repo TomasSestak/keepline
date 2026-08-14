@@ -12,9 +12,6 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      # Required for npm provenance — the published package gets a signed,
-      # verifiable link back to the commit and workflow that built it.
-      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:

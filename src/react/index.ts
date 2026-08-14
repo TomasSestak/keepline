@@ -43,14 +43,21 @@ export {
   ValidationError
 } from '../core/errors';
 export type {
+  AbortSignalLike,
+  BinaryBlob,
   CloseContext,
   KeeplineEvent,
   OpenContext,
+  PlatformAbortSignal,
+  PlatformBlob,
+  PlatformWebSocket,
   ReconnectContext,
   RequestOptions,
   Socket,
   SocketMetrics,
   SocketOptions,
   SocketStatus,
-  SubscriptionSpec
+  SubscriptionSpec,
+  WebSocketBinaryType,
+  WebSocketLike
 } from '../core/types';

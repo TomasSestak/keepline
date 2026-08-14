@@ -50,17 +50,22 @@ export const useSocketMetrics = (
   options: UseSocketMetricsOptions = {}
 ): Readonly<SocketMetrics> | null => {
   const intervalMs = options.intervalMs ?? 1_000;
-  const [snapshot, setSnapshot] = useState<Readonly<SocketMetrics> | null>(
-    () => (socket ? { ...socket.metrics } : null)
-  );
+  const [snapshot, setSnapshot] = useState<{
+    socket: typeof socket;
+    metrics: Readonly<SocketMetrics> | null;
+  }>(() => ({
+    socket,
+    metrics: socket ? { ...socket.metrics } : null
+  }));
 
   useEffect(() => {
     if (!socket) {
-      setSnapshot(null);
+      setSnapshot({ socket, metrics: null });
       return;
     }
 
-    const sample = (): void => setSnapshot({ ...socket.metrics });
+    const sample = (): void =>
+      setSnapshot({ socket, metrics: { ...socket.metrics } });
     sample();
 
     const offStatus = socket.onStatusChange(sample);
@@ -73,5 +78,5 @@ export const useSocketMetrics = (
     };
   }, [socket, intervalMs]);
 
-  return snapshot;
+  return snapshot.socket === socket ? snapshot.metrics : null;
 };

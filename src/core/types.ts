@@ -3,11 +3,80 @@ import type { CloseCategory } from './close-codes';
 import type { QueueOptions } from './send-queue';
 import type { StandardSchemaV1 } from './standard-schema';
 
+/** Blob-shaped binary data, without requiring TypeScript's DOM library. */
+export interface BinaryBlob {
+  readonly size: number;
+  readonly type: string;
+  arrayBuffer(): Promise<ArrayBuffer>;
+  slice(start?: number, end?: number, contentType?: string): BinaryBlob;
+  text(): Promise<string>;
+}
+
+/** Native Blob when DOM types exist, otherwise keepline's structural fallback. */
+export type PlatformBlob = typeof globalThis extends {
+  Blob: { prototype: infer TBlob };
+}
+  ? TBlob
+  : BinaryBlob;
+
 /** Anything a WebSocket can hand you in a `message` event. */
-export type RawData = string | ArrayBuffer | ArrayBufferView | Blob;
+export type RawData = string | ArrayBuffer | ArrayBufferView | PlatformBlob;
 
 /** Anything you can hand to `WebSocket.send`. */
-export type SendableData = string | ArrayBufferLike | ArrayBufferView | Blob;
+export type SendableData =
+  | string
+  | ArrayBufferLike
+  | ArrayBufferView
+  | PlatformBlob;
+
+export type WebSocketBinaryType = 'blob' | 'arraybuffer';
+
+/**
+ * Transport surface used by keepline. Structural so Node consumers can pass
+ * `ws` without adding the DOM library solely for this package's declarations.
+ */
+export interface WebSocketLike {
+  readonly CONNECTING: number;
+  readonly OPEN: number;
+  readonly CLOSING: number;
+  readonly CLOSED: number;
+  readonly url: string;
+  readonly readyState: number;
+  readonly bufferedAmount: number;
+  readonly extensions: string;
+  readonly protocol: string;
+  binaryType: WebSocketBinaryType;
+  send(data: unknown): void;
+  close(code?: number, reason?: string): void;
+  addEventListener(type: string, listener: (event: unknown) => void): void;
+  removeEventListener(type: string, listener: (event: unknown) => void): void;
+}
+
+/** Native WebSocket when DOM types exist, otherwise the structural fallback. */
+export type PlatformWebSocket = typeof globalThis extends {
+  WebSocket: { prototype: infer TWebSocket };
+}
+  ? TWebSocket
+  : WebSocketLike;
+
+/** AbortSignal subset used by request and wait helpers. */
+export interface AbortSignalLike {
+  readonly aborted: boolean;
+  readonly reason: unknown;
+  addEventListener(
+    type: 'abort',
+    listener: () => void,
+    options?: boolean | { once?: boolean }
+  ): void;
+  removeEventListener(type: 'abort', listener: () => void): void;
+}
+
+/** Native AbortSignal when available, otherwise the structural fallback. */
+export type PlatformAbortSignal = typeof globalThis extends {
+  AbortSignal: { prototype: infer TSignal };
+}
+  ? TSignal
+  : AbortSignalLike;
 
 export type Unsubscribe = () => void;
 
@@ -58,7 +127,6 @@ export type ErrorPhase =
  * This is the whole observability surface: attach one listener and you can
  * build breadcrumbs, metrics, a devtools panel, or a log stream without the
  * library depending on any of them. See `keepline/sentry` and `keepline/logger`
- * for adapters built on exactly this.
  */
 export type KeeplineEventPayload<TIn = unknown, TOut = unknown> =
   | { type: 'status'; status: SocketStatus; previous: SocketStatus }
@@ -70,6 +138,8 @@ export type KeeplineEventPayload<TIn = unknown, TOut = unknown> =
       reconnected: boolean;
       /** Milliseconds spent down before this open. 0 for a first connection. */
       downtimeMs: number;
+      /** Send only while this exact opened transport is still current. */
+      send(payload: TOut): boolean;
     }
   | { type: 'message'; message: TIn }
   | { type: 'decode-error'; error: unknown; data: RawData }
@@ -87,6 +157,8 @@ export type KeeplineEventPayload<TIn = unknown, TOut = unknown> =
       reason: string;
       wasClean: boolean;
       category: CloseCategory;
+      /** Final policy result; async reconnect policies settle before emission. */
+      willReconnect: boolean;
     }
   | { type: 'error'; error: unknown; phase: ErrorPhase }
   | {
@@ -144,7 +216,7 @@ export type ProtocolsResolver = () => ProtocolsInput | Promise<ProtocolsInput>;
 export type SocketFactory = (
   url: string,
   protocols: ProtocolsInput
-) => WebSocket;
+) => WebSocketLike;
 
 export interface ReconnectContext {
   attempt: number;
@@ -164,11 +236,13 @@ export interface ReconnectOptions {
   /** Retry after an `error` event with no close. Default true. */
   retryOnError?: boolean;
   /**
-   * Final say on whether to retry. Called before each attempt, after the
-   * built-in close-code check.
+   * Final say on whether to retry. Called before each attempt with the
+   * built-in close-code result available implicitly as the default when this
+   * callback is omitted.
    *
-   * The default refuses to retry auth failures and protocol errors — see
-   * {@link isRetryableClose}. Return `true` here to override that.
+   * The default refuses auth failures and protocol errors — see
+   * {@link isRetryableClose}. Returning `true` overrides that refusal. Retry
+   * budgets, `reconnect: false`, and `retryOnError: false` remain hard bounds.
    */
   shouldReconnect?: (context: ReconnectContext) => boolean | Promise<boolean>;
   /** Delay used when the server closed with 1013/1014. Default 30_000ms. */
@@ -197,7 +271,7 @@ export interface OpenContext<TOut = unknown> {
   url: string;
   attempt: number;
   reconnected: boolean;
-  /** Send bypassing the queue — the socket is open by definition here. */
+  /** Send bypassing the queue; returns false once this transport is stale. */
   send: (payload: TOut) => boolean;
 }
 
@@ -206,6 +280,7 @@ export interface CloseContext {
   reason: string;
   wasClean: boolean;
   category: CloseCategory;
+  /** Final policy result. `onClose` waits for an async policy to settle. */
   willReconnect: boolean;
 }
 
@@ -232,7 +307,7 @@ export interface SocketOptions<TIn = unknown, TOut = unknown> {
   key?: string;
   /** Connect on creation. Default true. */
   autoConnect?: boolean;
-  binaryType?: BinaryType;
+  binaryType?: WebSocketBinaryType;
   /**
    * Give up on an attempt that never opens. Default 10_000ms.
    *
@@ -298,7 +373,7 @@ export interface RequestOptions<TIn = unknown> {
   match?: (message: TIn) => boolean;
   /** Reject after this long. Default 10_000ms. */
   timeoutMs?: number;
-  signal?: AbortSignal;
+  signal?: PlatformAbortSignal;
 }
 
 /**
@@ -355,10 +430,11 @@ export interface Socket<TIn = unknown, TOut = unknown> {
    */
   onStatusChange(listener: () => void): Unsubscribe;
 
-  getWebSocket(): WebSocket | null;
+  /** The structural transport owned by this socket, if one exists. */
+  getWebSocket(): WebSocketLike | null;
   /** Resolves on the next `open`. Rejects on `gave-up`, destroy, or timeout. */
   waitForOpen(options?: {
     timeoutMs?: number;
-    signal?: AbortSignal;
+    signal?: PlatformAbortSignal;
   }): Promise<void>;
 }

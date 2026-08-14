@@ -19,12 +19,9 @@ name: Publish
 on:
   release:
     types: [published]
+  # Manual runs are validation-only. A real publish requires a GitHub Release,
+  # whose tag is checked against package.json below.
   workflow_dispatch:
-    inputs:
-      dry-run:
-        description: Pack and validate without publishing
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -58,12 +55,13 @@ jobs:
 
       - name: Ensure npm supports trusted publishing
         run: |
-          npm install -g npm@latest
+          npm install -g npm@11.5.1
           npm --version
 
       - run: bun install --frozen-lockfile
 
       - run: bun run verify
+      - run: bun run package:smoke
 
       - name: Check the release tag matches package.json
         if: github.event_name == 'release'
@@ -77,6 +75,7 @@ jobs:
           echo "Publishing version $PKG"
 
       - name: Fail early if this version is already on npm
+        if: github.event_name == 'release'
         run: |
           NAME="$(node -p "require('./package.json').name")"
           VERSION="$(node -p "require('./package.json').version")"
@@ -86,11 +85,11 @@ jobs:
           fi
 
       - name: Publish (dry run)
-        if: inputs.dry-run
+        if: github.event_name == 'workflow_dispatch'
         run: npm publish --dry-run
 
       # No NODE_AUTH_TOKEN: the credential comes from the OIDC exchange, and
       # provenance is generated automatically for trusted publishes.
       - name: Publish
-        if: ${{ !inputs.dry-run }}
+        if: github.event_name == 'release'
         run: npm publish
