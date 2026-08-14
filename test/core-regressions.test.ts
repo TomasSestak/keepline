@@ -2082,3 +2082,97 @@ describe('downtime and subscription ownership', () => {
     instance.destroy();
   });
 });
+
+describe('ReconnectContext.wasOpen', () => {
+  it('is true when an established connection drops', () => {
+    const seen: boolean[] = [];
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        backoff: constantBackoff(10),
+        shouldReconnect: ({ wasOpen }) => {
+          seen.push(wasOpen);
+          return false;
+        }
+      }
+    });
+
+    socket().acceptConnection();
+    socket().serverClose({ code: 1006 });
+
+    expect(seen).toEqual([true]);
+    instance.destroy();
+  });
+
+  it('is false when the handshake is refused before opening', () => {
+    const seen: boolean[] = [];
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        backoff: constantBackoff(10),
+        shouldReconnect: ({ wasOpen }) => {
+          seen.push(wasOpen);
+          return false;
+        }
+      }
+    });
+
+    // What a browser reports for a rejected upgrade: an error and a 1006 close
+    // that is indistinguishable, by code alone, from an ordinary network drop.
+    socket().serverError();
+    socket().serverClose({ code: 1006 });
+
+    expect(seen).toEqual([false]);
+    instance.destroy();
+  });
+
+  it('reports false again for an attempt that fails after an earlier success', () => {
+    const seen: boolean[] = [];
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        backoff: constantBackoff(10),
+        shouldReconnect: ({ wasOpen }) => {
+          seen.push(wasOpen);
+          return true;
+        }
+      }
+    });
+
+    vi.useFakeTimers();
+    socket().acceptConnection();
+    socket().serverClose({ code: 1006 });
+    vi.advanceTimersByTime(10);
+    // The replacement never opens — a token that expired mid-session.
+    socket().serverClose({ code: 1006 });
+
+    expect(seen).toEqual([true, false]);
+    instance.destroy();
+  });
+
+  it('is passed to the backoff strategy so a refused handshake can cost more', () => {
+    vi.useFakeTimers();
+    const delays: Array<{ attempt: number; wasOpen?: boolean }> = [];
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        backoff: (attempt, context) => {
+          delays.push({ attempt, wasOpen: context?.wasOpen });
+          return context?.wasOpen ? 10 : 1000;
+        }
+      }
+    });
+
+    socket().acceptConnection();
+    socket().serverClose({ code: 1006 });
+    expect(delays).toEqual([{ attempt: 1, wasOpen: true }]);
+
+    // The fast retry the dropped session earned.
+    vi.advanceTimersByTimeAsync(10);
+    instance.destroy();
+  });
+});

@@ -156,6 +156,29 @@ useSocket({
 });
 ```
 
+### A gateway that refuses the upgrade
+
+Not every rejection arrives as a close code. When a gateway refuses the WebSocket upgrade outright, the browser reports `error` and `close: 1006` in the same millisecond — no status, no reason, and the same code an ordinary network drop produces. Neither `retryOnError` nor the close-code table can classify it, so a socket that retries drops aggressively retries a rejected token just as aggressively, for as long as the tab stays open.
+
+`wasOpen` is the distinction the close event does not carry: whether the attempt that just failed had reached `open`.
+
+```ts
+const dropped = linearBackoff({ stepMs: 200, maxDelayMs: 5_000 });
+const refused = exponentialBackoff({ initialDelayMs: 200, maxDelayMs: 60_000 });
+
+const socket = createSocket({
+  url: 'wss://api.example.com/feed',
+  reconnect: {
+    // A dropped session recovers immediately. A handshake that never opened
+    // backs off to roughly one attempt a minute instead of one every 5s.
+    backoff: (attempt, context) =>
+      context?.wasOpen ? dropped(attempt) : refused(attempt)
+  }
+});
+```
+
+Prefer this to capping `attempts`: a budget spent on a refused handshake is also spent by a long outage, and strands a socket that would otherwise have come back on its own. `attempt` resets on every successful open, so a healthy connection never accumulates delay.
+
 ### Request/response over the socket
 
 ```ts
