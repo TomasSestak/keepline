@@ -139,6 +139,26 @@ describe('keepline/compat', () => {
     expect(MockWebSocket.instances).toHaveLength(1);
   });
 
+  it('does not let shouldReconnect override an auth close', async () => {
+    vi.useFakeTimers();
+    const shouldReconnect = vi.fn(() => true);
+    const { result } = renderHook(() =>
+      useWebSocket('wss://bounded-policy', {
+        reconnectAttempts: 3,
+        reconnectInterval: 10,
+        shouldReconnect
+      })
+    );
+
+    act(() => socket().acceptConnection());
+    act(() => socket().serverClose({ code: 1008 }));
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+
+    expect(shouldReconnect).not.toHaveBeenCalled();
+    expect(result.current.readyState).toBe(ReadyState.CLOSED);
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
   it('appends queryParams', () => {
     renderHook(() =>
       useWebSocket('wss://x/feed', { queryParams: { token: 'abc', v: 2 } })

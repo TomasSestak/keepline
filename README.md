@@ -31,7 +31,7 @@
   ·
   <a href="#entry-points">Entry points</a>
   ·
-  <a href="./MIGRATION.md">Migration</a>
+  <a href="./MIGRATION.md">Migrate from react-use-websocket</a>
 </p>
 
 ```bash
@@ -47,7 +47,7 @@ The specific failures this exists to fix:
 - **A socket that is `OPEN` and dead.** A NAT entry expires, a proxy goes away, and `readyState` stays `1` forever while nothing arrives. Only a heartbeat notices.
 - **`readyState` cannot express "down but coming back."** Nor "down for good." Both read as `CLOSED`, so a UI built on it cannot tell a blip from an outage.
 - **Reconnecting without jitter.** A server restart drops every client at the same instant; an un-jittered fleet then retries at the same instant, repeatedly, turning a 2-second restart into a 5-minute outage.
-- **Reconnecting after an auth failure.** Retrying rejected credentials forever is how a client earns a rate limit.
+- **Reconnecting after a close-coded auth failure.** Retrying rejected credentials forever is how a client earns a rate limit.
 - **A reconnect that comes back subscribed to nothing.** The socket is open, the server has forgotten your subscriptions, and the effect that sent them does not re-run.
 - **Silent close codes.** The single most useful fact about a failure — 1006 network vs 1008 auth vs 4001 application — is the one thing most wrappers throw away.
 - **`JSON.parse` in an event handler.** A throw inside a WebSocket callback reaches no error boundary and no `try`/`catch`; it becomes an unhandled window error.
@@ -97,7 +97,7 @@ const socket = createSocket({
 
 | | |
 | --- | --- |
-| **Reconnection** | Truncated exponential backoff with **jitter on by default**; `linearBackoff`/`constantBackoff` provided; per-attempt `shouldReconnect`; retry budget; refuses auth failures and protocol errors by default; honours a server's 1013 "try again later" with a longer delay |
+| **Reconnection** | Truncated exponential backoff with **jitter on by default**; `linearBackoff`/`constantBackoff` provided; per-attempt `shouldReconnect` veto; retry budget; hard-stops delivered auth and protocol close codes; honours a server's 1013 "try again later" with a longer delay |
 | **Liveness** | `heartbeat` ping/pong with RTT measurement and half-open detection; `staleAfterMs` silence watchdog; `connectTimeoutMs` for handshakes that hang against a black-holed host |
 | **Status** | 8 real states, including `reconnecting`, `paused` and `gave-up` |
 | **Outbound** | Bounded queue while connecting, flushed in order on open; `drop-oldest` / `drop-newest` / `reject` overflow policies |
@@ -112,7 +112,7 @@ const socket = createSocket({
 | **Sharing** | `share: true` or `<SocketProvider>`; reference-counted with a grace period so StrictMode and route transitions don't churn the connection |
 | **SSR** | No-ops without a `WebSocket` global. No guards, no dynamic imports |
 
-Core is **5.9 kB** brotli, React bindings **7.8 kB**, with **6 kB / 8 kB budgets enforced in CI**.
+Core stays under **6 kB** brotli and React bindings under **8 kB**, with both budgets enforced in CI.
 
 ## Entry points
 
@@ -129,7 +129,9 @@ Core is **5.9 kB** brotli, React bindings **7.8 kB**, with **6 kB / 8 kB budgets
 
 ### Auth with short-lived tokens
 
-A resolver runs on *every* attempt, so the token is fresh at connect time — including the reconnect three minutes after the tab was opened. Auth failures (1008, 4001, 4401, ...) are not retried by default, so rejected credentials do not loop. An explicit `shouldReconnect` policy can override that default after your application refreshes the credentials.
+A resolver runs on *every* attempt, so the token is fresh at connect time — including the reconnect three minutes after the tab was opened. When the browser delivers an auth close code (1008, 4001, 4401, ...), it is a hard stop; `shouldReconnect` can narrow that policy but cannot widen it.
+
+A rejected WebSocket upgrade may instead emit only `error`, or deliver `close` after Keepline's 50ms grace period. Browser error events expose neither the HTTP status nor a close code, so that path is governed by `retryOnError` (default `true`). For a protected endpoint, set it to `false`; the errored transport then settles `closed`, and your application can call `socket.reconnect()` after refreshing credentials.
 
 ```ts
 const socket = createSocket({
@@ -137,6 +139,7 @@ const socket = createSocket({
     const token = await auth.getFreshToken();   // may refresh
     return `wss://api.example.com/feed?token=${token}`;
   },
+  reconnect: { retryOnError: false },
   onClose: ({ category, willReconnect }) => {
     if (category === 'policy' && !willReconnect) redirectToLogin();
   }

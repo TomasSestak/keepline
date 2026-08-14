@@ -1376,44 +1376,228 @@ describe('reconnect policy and error fallback', () => {
     instance.destroy();
   });
 
-  it('only reports an error-only event when retryOnError is false', async () => {
+  it('settles a pre-open error-only transport when retryOnError is false', async () => {
     vi.useFakeTimers();
     const instance = createSocket({
       url: 'wss://x',
       socketFactory: mockSocketFactory,
+      connectTimeoutMs: 1000,
       reconnect: { retryOnError: false, backoff: constantBackoff(10) }
     });
 
-    socket().acceptConnection();
-    socket().serverError();
-    await vi.advanceTimersByTimeAsync(100);
+    const transport = socket();
+    transport.serverError();
+    await vi.advanceTimersByTimeAsync(50);
 
-    expect(instance.status).toBe('open');
+    expect(instance.status).toBe('closed');
+    expect(instance.getWebSocket()).toBeNull();
+    expect(transport.readyState).toBe(MockWebSocket.CLOSED);
+    expect(instance.metrics.failedAttempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(2000);
     expect(MockWebSocket.instances).toHaveLength(1);
     instance.destroy();
   });
 
-  it('lets shouldReconnect override a normally refused close code', async () => {
+  it('settles a refused error before applying a zero retry budget', async () => {
     vi.useFakeTimers();
-    const closes: CloseContext[] = [];
+    const events: KeeplineEvent[] = [];
     const policy = vi.fn(() => true);
     const instance = createSocket({
       url: 'wss://x',
       socketFactory: mockSocketFactory,
-      reconnect: { backoff: constantBackoff(10), shouldReconnect: policy },
-      onClose: (context) => closes.push(context)
+      reconnect: {
+        attempts: 0,
+        retryOnError: false,
+        shouldReconnect: policy
+      },
+      onEvent: (event) => events.push(event)
+    });
+
+    socket().serverError();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(policy).not.toHaveBeenCalled();
+    expect(instance.status).toBe('closed');
+    expect(events.some((event) => event.type === 'gave-up')).toBe(false);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    instance.destroy();
+  });
+
+  it('lets a close within the error grace period own recovery', async () => {
+    vi.useFakeTimers();
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        retryOnError: false,
+        backoff: constantBackoff(10)
+      }
+    });
+
+    socket().serverError();
+    socket().serverClose({ code: 1006 });
+    await vi.advanceTimersByTimeAsync(11);
+
+    expect(instance.status).toBe('reconnecting');
+    expect(MockWebSocket.instances).toHaveLength(2);
+    instance.destroy();
+  });
+
+  it('settles before a close delivered after the error grace period', async () => {
+    vi.useFakeTimers();
+    const policy = vi.fn(() => true);
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        retryOnError: false,
+        backoff: constantBackoff(10),
+        shouldReconnect: policy
+      }
+    });
+
+    const transport = socket();
+    transport.serverError();
+    setTimeout(
+      () => transport.serverClose({ code: 4401, reason: 'unauthorized' }),
+      75
+    );
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(policy).not.toHaveBeenCalled();
+    expect(instance.status).toBe('closed');
+    expect(instance.getWebSocket()).toBeNull();
+    expect(MockWebSocket.instances).toHaveLength(1);
+    instance.destroy();
+  });
+
+  it('settles an error-only transport when reconnection is disabled', async () => {
+    vi.useFakeTimers();
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: false
+    });
+
+    socket().serverError();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(instance.status).toBe('closed');
+    expect(instance.getWebSocket()).toBeNull();
+    expect(MockWebSocket.instances).toHaveLength(1);
+    instance.destroy();
+  });
+
+  it('settles an open error-only transport when retryOnError is false', async () => {
+    vi.useFakeTimers();
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: { retryOnError: false }
+    });
+
+    socket().acceptConnection();
+    socket().serverError();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(instance.status).toBe('closed');
+    expect(instance.getWebSocket()).toBeNull();
+    expect(instance.metrics.failedAttempts).toBe(0);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    instance.destroy();
+  });
+
+  it.each([1008, 1002])(
+    'does not let shouldReconnect override refused close code %i',
+    async (code) => {
+      vi.useFakeTimers();
+      const closes: CloseContext[] = [];
+      const policy = vi.fn(() => true);
+      const instance = createSocket({
+        url: 'wss://x',
+        socketFactory: mockSocketFactory,
+        reconnect: { backoff: constantBackoff(10), shouldReconnect: policy },
+        onClose: (context) => closes.push(context)
+      });
+
+      socket().acceptConnection();
+      socket().serverClose({ code });
+
+      // The callback narrows the built-in policy rather than replacing it, so a
+      // blanket `true` cannot resurrect an auth failure. It is not consulted at
+      // all once a hard bound has already refused.
+      expect(policy).not.toHaveBeenCalled();
+      expect(closes).toHaveLength(1);
+      expect(closes[0]?.willReconnect).toBe(false);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(MockWebSocket.instances).toHaveLength(1);
+      expect(instance.status).toBe('closed');
+      instance.destroy();
+    }
+  );
+
+  it('settles a refused close before applying a zero retry budget', () => {
+    const events: KeeplineEvent[] = [];
+    const policy = vi.fn(() => true);
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: { attempts: 0, shouldReconnect: policy },
+      onEvent: (event) => events.push(event)
     });
 
     socket().acceptConnection();
     socket().serverClose({ code: 1008 });
 
-    expect(policy).toHaveBeenCalledWith(
-      expect.objectContaining({ code: 1008 })
-    );
-    expect(closes).toHaveLength(1);
-    expect(closes[0]?.willReconnect).toBe(true);
+    expect(policy).not.toHaveBeenCalled();
+    expect(instance.status).toBe('closed');
+    expect(events.some((event) => event.type === 'gave-up')).toBe(false);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    instance.destroy();
+  });
+
+  it('allows an explicit reconnect after a refused close code', () => {
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory
+    });
+
+    socket().acceptConnection();
+    socket().serverClose({ code: 1008 });
+    expect(instance.status).toBe('closed');
+
+    instance.reconnect();
+    expect(instance.status).toBe('connecting');
+    expect(MockWebSocket.instances).toHaveLength(2);
+    instance.destroy();
+  });
+
+  it('keeps refusing an auth close when the extra veto allows everything else', async () => {
+    vi.useFakeTimers();
+    // The shape almost every consumer writes: one extra stop condition, `true`
+    // for everything else. While the close-code table was only a soft default,
+    // such a callback silently disabled it and looped on a rejected token.
+    let prevented = false;
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        backoff: constantBackoff(10),
+        shouldReconnect: () => !prevented
+      }
+    });
+
+    socket().acceptConnection();
+    socket().serverClose({ code: 1006 });
     await vi.advanceTimersByTimeAsync(10);
     expect(MockWebSocket.instances).toHaveLength(2);
+
+    socket().acceptConnection();
+    socket().serverClose({ code: 1008, reason: 'token rejected' });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    prevented = true;
     instance.destroy();
   });
 
