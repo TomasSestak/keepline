@@ -768,30 +768,21 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
       return;
     }
 
-    const nextAttempt = attempt + 1;
-    if (nextAttempt > maxAttempts) {
-      if (notifyDecision(false))
-        settleWithoutReconnect(context, true, decisionGeneration);
-      return;
-    }
-    if (context.cause === 'error' && !retryOnError) {
+    // `retryOnError: false` and non-retryable close codes are hard bounds, so
+    // `shouldReconnect` narrows the built-in policy instead of replacing it.
+    if (
+      (context.cause === 'error' && !retryOnError) ||
+      (context.code !== undefined && !isRetryableClose(context.code))
+    ) {
       if (notifyDecision(false))
         settleWithoutReconnect(context, false, decisionGeneration);
       return;
     }
 
-    // A non-retryable close is a hard bound, like the retry budget and
-    // `retryOnError` above it, so `shouldReconnect` narrows the built-in policy
-    // instead of replacing it. Letting the callback override this reads as a
-    // feature and behaves as a footgun: the common callback adds one extra stop
-    // condition and returns `true` otherwise, which silently turns an auth
-    // failure into an infinite reconnect loop against a server that is
-    // rejecting the credentials — the exact case the close-code table exists to
-    // prevent. To retry one deliberately, call `socket.reconnect()` from
-    // `onClose` once whatever made it non-retryable has been fixed.
-    if (context.code !== undefined && !isRetryableClose(context.code)) {
+    const nextAttempt = attempt + 1;
+    if (nextAttempt > maxAttempts) {
       if (notifyDecision(false))
-        settleWithoutReconnect(context, false, decisionGeneration);
+        settleWithoutReconnect(context, true, decisionGeneration);
       return;
     }
 
@@ -1022,13 +1013,10 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
     report(error, 'socket');
     if (!isCurrentGeneration(gen) || ws !== socket) return;
 
-    if (!reconnectOptions || !retryOnError || errorRetryTimer !== undefined)
-      return;
+    if (errorRetryTimer !== undefined) return;
 
-    // A browser normally follows `error` with `close`. Give transports a brief
-    // grace period for that close to arrive and own the retry; otherwise recover
-    // from implementations that emit only `error`. `handleClose` clears this
-    // timer, preventing duplicates.
+    // Give `close` a brief chance to own recovery. If none arrives, abandon the
+    // errored transport and let the central policy either retry or settle it.
     errorRetryTimer = setTimeout(() => {
       errorRetryTimer = undefined;
       if (!isCurrentGeneration(gen) || intentionallyClosed || ws !== socket)

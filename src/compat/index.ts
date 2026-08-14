@@ -3,7 +3,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { constantBackoff } from '../core/backoff';
-import { isRetryableClose } from '../core/close-codes';
 import type { RawData, SendableData } from '../core/types';
 import { identityOf } from '../react/identity';
 import { useIsomorphicInsertionEffect } from '../react/use-isomorphic-layout-effect';
@@ -22,9 +21,10 @@ import { useSocket } from '../react/use-socket';
  *
  * Two behavioural differences worth knowing: your `reconnectInterval` is
  * honoured exactly here (direct `keepline/react` use defaults to jittered
- * exponential backoff), and auth failures are not retried by default. An
- * explicit `shouldReconnect` policy may override that default. MIGRATION.md
- * lists the rest.
+ * exponential backoff), and delivered auth or protocol close codes cannot be
+ * retried by `shouldReconnect`. An `error` without a `close` during the grace
+ * period has no code to classify and is controlled by `retryOnError`.
+ * MIGRATION.md lists the rest.
  */
 export const ReadyState = {
   UNINSTANTIATED: -1,
@@ -203,11 +203,7 @@ export const useWebSocket = <TJson = unknown>(
               : constantBackoff(options.reconnectInterval ?? 5_000),
           shouldReconnect: (context) => {
             const handler = optionsRef.current.shouldReconnect;
-            if (!handler) {
-              return (
-                context.code === undefined || isRetryableClose(context.code)
-              );
-            }
+            if (!handler) return true;
             return handler(
               makeCloseEvent({
                 code: context.code ?? 1006,

@@ -20,9 +20,10 @@ These are deliberate. Each one is a bug in the old default rather than a missing
 | | `react-use-websocket` | `keepline/compat` |
 | --- | --- | --- |
 | **Reconnect delay** | `reconnectInterval` exactly, no jitter | Your `reconnectInterval` is honoured exactly (number or function). Direct `keepline/react` use defaults to jittered exponential backoff. |
-| **Auth failures** | Retried like any other close | Never retried. Call `socket.reconnect()` once your app has refreshed the credentials. |
-| **Protocol errors** | Retried | Never retried (1002, 1003, 1007, 1009, 1010, 1015). |
-| **Handshake that hangs** | Waits for the browser | Abandoned after 10s and retried. |
+| **Auth failures** | Retried when your reconnect policy allows | A delivered auth close code (1008, 3000, 4001, 4401, 4403) is a hard stop; `shouldReconnect` is not called and cannot override it. After refreshing credentials, change the connection identity (URL, `queryParams`, or `protocols`) or toggle the third `connect` argument off and on. Move that call site to `keepline/react` if you need an explicit `reconnect()` function. |
+| **Protocol errors** | Retried when your reconnect policy allows | Delivered codes 1002, 1003, 1007, 1009, 1010, and 1015 are hard stops; `shouldReconnect` cannot override them. Recover by replacing the connection identity or toggling `connect`. |
+| **`error` without a timely `close`** | `retryOnError` controls whether to retry | Keepline waits 50ms for `close` to own recovery. After that, the browser exposes no usable code or HTTP status: `retryOnError: true` retries, while `false` or omission in `keepline/compat` settles `closed`. |
+| **Handshake that hangs** | Waits for the browser | Abandoned after 10s; retried only when reconnection is enabled. |
 | **`heartbeat.timeout`** | Closes the socket after N ms of silence | Forces a reconnect after N ms without a pong. Same intent, and it also detects a half-open socket. |
 | **Sends before open** | Dropped unless `keep` was used | Queued (bounded, 64 items) and flushed in order on open. `keep: false` keeps its meaning: the message is dropped instead of queued. |
 | **Malformed JSON** | `lastJsonMessage` becomes `null` | Same; the compatibility hook keeps the raw `MessageEvent` available as `lastMessage`. |

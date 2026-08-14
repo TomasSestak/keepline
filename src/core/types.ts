@@ -233,7 +233,17 @@ export interface ReconnectOptions {
   attempts?: number;
   /** Default: {@link exponentialBackoff} with equal jitter. */
   backoff?: BackoffStrategy;
-  /** Retry after an `error` event with no close. Default true. */
+  /**
+   * Retry after an `error` event with no `close` during the grace period.
+   * Default true.
+   *
+   * A close arriving within the 50ms grace period owns recovery normally.
+   * Otherwise the errored transport is abandoned; when this is false the
+   * socket settles `closed` instead of leaking into a later connect timeout.
+   * Browser error events expose no status or reason, so an error-only failure
+   * or a close delivered after the grace period cannot be classified by its
+   * close code.
+   */
   retryOnError?: boolean;
   /**
    * An extra veto on top of the built-in policy, called before each attempt.
@@ -243,9 +253,9 @@ export interface ReconnectOptions {
    * `reconnect: false`, or `retryOnError: false` already refused. Those stay
    * hard bounds, and this callback is not consulted once one of them applies.
    *
-   * In particular, auth failures and protocol errors are never retried — see
-   * {@link isRetryableClose}. To retry one deliberately, call
-   * `socket.reconnect()` from `onClose` after fixing whatever caused it (a
+   * In particular, auth failures and protocol errors reported by a delivered
+   * close code are never retried — see {@link isRetryableClose}. To retry one
+   * deliberately, call `socket.reconnect()` after fixing whatever caused it (a
    * refreshed token, say).
    */
   shouldReconnect?: (context: ReconnectContext) => boolean | Promise<boolean>;
