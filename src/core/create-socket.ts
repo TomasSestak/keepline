@@ -780,8 +780,21 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
       return;
     }
 
-    const defaultAllowed =
-      context.code === undefined || isRetryableClose(context.code);
+    // A non-retryable close is a hard bound, like the retry budget and
+    // `retryOnError` above it, so `shouldReconnect` narrows the built-in policy
+    // instead of replacing it. Letting the callback override this reads as a
+    // feature and behaves as a footgun: the common callback adds one extra stop
+    // condition and returns `true` otherwise, which silently turns an auth
+    // failure into an infinite reconnect loop against a server that is
+    // rejecting the credentials — the exact case the close-code table exists to
+    // prevent. To retry one deliberately, call `socket.reconnect()` from
+    // `onClose` once whatever made it non-retryable has been fixed.
+    if (context.code !== undefined && !isRetryableClose(context.code)) {
+      if (notifyDecision(false))
+        settleWithoutReconnect(context, false, decisionGeneration);
+      return;
+    }
+
     const decision: ReconnectContext = {
       ...context,
       attempt: nextAttempt
@@ -850,11 +863,9 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
       }, delayMs);
     };
 
-    let allowed: boolean | Promise<boolean> = defaultAllowed;
+    let allowed: boolean | Promise<boolean> = true;
     if (reconnectOptions.shouldReconnect) {
       try {
-        // This is intentionally called for non-retryable close codes: the
-        // documented callback is the final override of the built-in default.
         allowed = reconnectOptions.shouldReconnect(decision);
       } catch (error) {
         report(error, 'listener');

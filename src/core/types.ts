@@ -236,13 +236,17 @@ export interface ReconnectOptions {
   /** Retry after an `error` event with no close. Default true. */
   retryOnError?: boolean;
   /**
-   * Final say on whether to retry. Called before each attempt with the
-   * built-in close-code result available implicitly as the default when this
-   * callback is omitted.
+   * An extra veto on top of the built-in policy, called before each attempt.
    *
-   * The default refuses auth failures and protocol errors — see
-   * {@link isRetryableClose}. Returning `true` overrides that refusal. Retry
-   * budgets, `reconnect: false`, and `retryOnError: false` remain hard bounds.
+   * It *narrows* the built-in decision and never widens it: returning `true`
+   * does not resurrect an attempt that the close-code table, the retry budget,
+   * `reconnect: false`, or `retryOnError: false` already refused. Those stay
+   * hard bounds, and this callback is not consulted once one of them applies.
+   *
+   * In particular, auth failures and protocol errors are never retried — see
+   * {@link isRetryableClose}. To retry one deliberately, call
+   * `socket.reconnect()` from `onClose` after fixing whatever caused it (a
+   * refreshed token, say).
    */
   shouldReconnect?: (context: ReconnectContext) => boolean | Promise<boolean>;
   /** Delay used when the server closed with 1013/1014. Default 30_000ms. */

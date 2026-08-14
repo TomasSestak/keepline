@@ -20,8 +20,8 @@ These are deliberate. Each one is a bug in the old default rather than a missing
 | | `react-use-websocket` | `keepline/compat` |
 | --- | --- | --- |
 | **Reconnect delay** | `reconnectInterval` exactly, no jitter | Your `reconnectInterval` is honoured exactly (number or function). Direct `keepline/react` use defaults to jittered exponential backoff. |
-| **Auth failures** | Retried like any other close | Not retried by default. An explicit `shouldReconnect` can override the default after your app refreshes credentials. |
-| **Protocol errors** | Retried | Not retried by default (1002, 1003, 1007, 1009, 1010, 1015); an explicit policy can override. |
+| **Auth failures** | Retried like any other close | Never retried. Call `socket.reconnect()` once your app has refreshed the credentials. |
+| **Protocol errors** | Retried | Never retried (1002, 1003, 1007, 1009, 1010, 1015). |
 | **Handshake that hangs** | Waits for the browser | Abandoned after 10s and retried. |
 | **`heartbeat.timeout`** | Closes the socket after N ms of silence | Forces a reconnect after N ms without a pong. Same intent, and it also detects a half-open socket. |
 | **Sends before open** | Dropped unless `keep` was used | Queued (bounded, 64 items) and flushed in order on open. `keep: false` keeps its meaning: the message is dropped instead of queued. |

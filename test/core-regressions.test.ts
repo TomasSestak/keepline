@@ -1393,7 +1393,7 @@ describe('reconnect policy and error fallback', () => {
     instance.destroy();
   });
 
-  it('lets shouldReconnect override a normally refused close code', async () => {
+  it('does not let shouldReconnect override a refused close code', async () => {
     vi.useFakeTimers();
     const closes: CloseContext[] = [];
     const policy = vi.fn(() => true);
@@ -1407,13 +1407,44 @@ describe('reconnect policy and error fallback', () => {
     socket().acceptConnection();
     socket().serverClose({ code: 1008 });
 
-    expect(policy).toHaveBeenCalledWith(
-      expect.objectContaining({ code: 1008 })
-    );
+    // The callback narrows the built-in policy rather than replacing it, so a
+    // blanket `true` cannot resurrect an auth failure. It is not consulted at
+    // all once a hard bound has already refused.
+    expect(policy).not.toHaveBeenCalled();
     expect(closes).toHaveLength(1);
-    expect(closes[0]?.willReconnect).toBe(true);
+    expect(closes[0]?.willReconnect).toBe(false);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(instance.status).toBe('closed');
+    instance.destroy();
+  });
+
+  it('keeps refusing an auth close when the extra veto allows everything else', async () => {
+    vi.useFakeTimers();
+    // The shape almost every consumer writes: one extra stop condition, `true`
+    // for everything else. While the close-code table was only a soft default,
+    // such a callback silently disabled it and looped on a rejected token.
+    let prevented = false;
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        backoff: constantBackoff(10),
+        shouldReconnect: () => !prevented
+      }
+    });
+
+    socket().acceptConnection();
+    socket().serverClose({ code: 1006 });
     await vi.advanceTimersByTimeAsync(10);
     expect(MockWebSocket.instances).toHaveLength(2);
+
+    socket().acceptConnection();
+    socket().serverClose({ code: 1008, reason: 'token rejected' });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    prevented = true;
     instance.destroy();
   });
 

@@ -97,7 +97,7 @@ const socket = createSocket({
 
 | | |
 | --- | --- |
-| **Reconnection** | Truncated exponential backoff with **jitter on by default**; `linearBackoff`/`constantBackoff` provided; per-attempt `shouldReconnect`; retry budget; refuses auth failures and protocol errors by default; honours a server's 1013 "try again later" with a longer delay |
+| **Reconnection** | Truncated exponential backoff with **jitter on by default**; `linearBackoff`/`constantBackoff` provided; per-attempt `shouldReconnect` veto; retry budget; refuses auth failures and protocol errors; honours a server's 1013 "try again later" with a longer delay |
 | **Liveness** | `heartbeat` ping/pong with RTT measurement and half-open detection; `staleAfterMs` silence watchdog; `connectTimeoutMs` for handshakes that hang against a black-holed host |
 | **Status** | 8 real states, including `reconnecting`, `paused` and `gave-up` |
 | **Outbound** | Bounded queue while connecting, flushed in order on open; `drop-oldest` / `drop-newest` / `reject` overflow policies |
@@ -129,7 +129,7 @@ Core is **5.9 kB** brotli, React bindings **7.8 kB**, with **6 kB / 8 kB budgets
 
 ### Auth with short-lived tokens
 
-A resolver runs on *every* attempt, so the token is fresh at connect time — including the reconnect three minutes after the tab was opened. Auth failures (1008, 4001, 4401, ...) are not retried by default, so rejected credentials do not loop. An explicit `shouldReconnect` policy can override that default after your application refreshes the credentials.
+A resolver runs on *every* attempt, so the token is fresh at connect time — including the reconnect three minutes after the tab was opened. Auth failures (1008, 4001, 4401, ...) are never retried, so rejected credentials do not loop; `shouldReconnect` narrows that policy and cannot widen it. Once your application has refreshed the credentials, call `socket.reconnect()` to start a fresh attempt deliberately.
 
 ```ts
 const socket = createSocket({
