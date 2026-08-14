@@ -114,7 +114,8 @@
     "size": "bun run build && size-limit",
     "verify": "bun run lint && bun run typecheck && bun run check:compiler && bun run test:coverage && bun run build",
     "prepublishOnly": "bun run build",
-    "release": "bun run verify && changeset status"
+    "release": "bun run verify && changeset status",
+    "changeset:version": "changeset version && biome format --write package.json"
   },
   "peerDependencies": {
     "react": ">=18.0.0"
