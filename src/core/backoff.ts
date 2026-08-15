@@ -1,9 +1,20 @@
+import type { ReconnectContext } from './types';
+
 /**
  * Reconnection delay strategies.
  *
  * `attempt` is 1-based: the first retry after a drop is attempt 1.
+ *
+ * `context` describes the failure being retried. It is what lets a strategy
+ * charge a refused handshake a different delay from a dropped session — see
+ * {@link ReconnectContext.wasOpen} — a distinction no close code carries. It is
+ * optional in the signature so every existing one-argument strategy stays
+ * assignable; keepline always passes it.
  */
-export type BackoffStrategy = (attempt: number) => number;
+export type BackoffStrategy = (
+  attempt: number,
+  context?: ReconnectContext
+) => number;
 
 export type JitterMode =
   /** No randomness. Every client in a fleet retries in lockstep. */

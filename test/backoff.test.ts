@@ -14,7 +14,9 @@ describe('exponentialBackoff', () => {
       jitter: 'none'
     });
 
-    expect([1, 2, 3, 4, 5].map(backoff)).toEqual([100, 200, 400, 800, 800]);
+    expect([1, 2, 3, 4, 5].map((attempt) => backoff(attempt))).toEqual([
+      100, 200, 400, 800, 800
+    ]);
   });
 
   it('spreads delays across the full range with full jitter', () => {
@@ -49,13 +51,17 @@ describe('linearBackoff', () => {
       jitter: 'none'
     });
 
-    expect([1, 10, 25, 26].map(backoff)).toEqual([200, 2000, 5000, 5000]);
+    expect([1, 10, 25, 26].map((attempt) => backoff(attempt))).toEqual([
+      200, 2000, 5000, 5000
+    ]);
   });
 });
 
 describe('constantBackoff', () => {
   it('returns the same delay every time', () => {
     const backoff = constantBackoff(1234);
-    expect([1, 2, 9].map(backoff)).toEqual([1234, 1234, 1234]);
+    expect([1, 2, 9].map((attempt) => backoff(attempt))).toEqual([
+      1234, 1234, 1234
+    ]);
   });
 });

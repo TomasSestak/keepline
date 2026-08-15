@@ -454,6 +454,37 @@ describe('generation-scoped async work', () => {
     instance.destroy();
   });
 
+  it('keeps the current transport when a connect-timeout listener opens it', async () => {
+    vi.useFakeTimers();
+    const backoffContexts: Array<boolean | undefined> = [];
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      connectTimeoutMs: 1,
+      reconnect: {
+        backoff: (_attempt, context) => {
+          backoffContexts.push(context?.wasOpen);
+          return 10;
+        }
+      },
+      onEvent: (event) => {
+        if (event.type === 'connect-timeout') socket().acceptConnection();
+      }
+    });
+    const transport = socket();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(instance.status).toBe('open');
+    expect(instance.metrics.connections).toBe(1);
+    expect(transport.readyState).toBe(MockWebSocket.OPEN);
+    expect(backoffContexts).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(instance.status).toBe('open');
+    instance.destroy();
+  });
+
   it('keeps the nested reconnect when transport close reenters reconnect', () => {
     const transports: EventTargetSocket[] = [];
     const holder: { instance?: ReturnType<typeof createSocket> } = {};
@@ -2078,6 +2109,158 @@ describe('downtime and subscription ownership', () => {
     expect(socket().sentJson).toEqual([
       { type: 'subscribe', room: 'new' },
       { type: 'unsubscribe', room: 'new' }
+    ]);
+    instance.destroy();
+  });
+});
+
+describe('ReconnectContext.wasOpen', () => {
+  it('is true when an established connection drops', () => {
+    const seen: boolean[] = [];
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        backoff: constantBackoff(10),
+        shouldReconnect: ({ wasOpen }) => {
+          seen.push(wasOpen);
+          return false;
+        }
+      }
+    });
+
+    socket().acceptConnection();
+    socket().serverClose({ code: 1006 });
+
+    expect(seen).toEqual([true]);
+    instance.destroy();
+  });
+
+  it('is false when the handshake is refused before opening', () => {
+    const seen: boolean[] = [];
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        backoff: constantBackoff(10),
+        shouldReconnect: ({ wasOpen }) => {
+          seen.push(wasOpen);
+          return false;
+        }
+      }
+    });
+
+    // What a browser reports for a rejected upgrade: an error and a 1006 close
+    // that is indistinguishable, by code alone, from an ordinary network drop.
+    socket().serverError();
+    socket().serverClose({ code: 1006 });
+
+    expect(seen).toEqual([false]);
+    instance.destroy();
+  });
+
+  it('reports false again for an attempt that fails after an earlier success', () => {
+    const seen: boolean[] = [];
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        backoff: constantBackoff(10),
+        shouldReconnect: ({ wasOpen }) => {
+          seen.push(wasOpen);
+          return true;
+        }
+      }
+    });
+
+    vi.useFakeTimers();
+    socket().acceptConnection();
+    socket().serverClose({ code: 1006 });
+    vi.advanceTimersByTime(10);
+    // The replacement never opens — a token that expired mid-session.
+    socket().serverClose({ code: 1006 });
+
+    expect(seen).toEqual([true, false]);
+    instance.destroy();
+  });
+
+  it('passes attempt state to backoff and honours both selected delays', async () => {
+    vi.useFakeTimers();
+    const delays: Array<{ attempt: number; wasOpen: boolean }> = [];
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        backoff: (attempt, context) => {
+          if (!context) throw new Error('missing reconnect context');
+          delays.push({ attempt, wasOpen: context.wasOpen });
+          return context.wasOpen ? 10 : 1000;
+        }
+      }
+    });
+
+    socket().acceptConnection();
+    socket().serverClose({ code: 1006 });
+    expect(delays).toEqual([{ attempt: 1, wasOpen: true }]);
+
+    await vi.advanceTimersByTimeAsync(9);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    socket().serverError();
+    socket().serverClose({ code: 1006 });
+    expect(delays).toEqual([
+      { attempt: 1, wasOpen: true },
+      { attempt: 2, wasOpen: false }
+    ]);
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(3);
+    instance.destroy();
+  });
+
+  it('passes authoritative context to backoff after policy mutation', () => {
+    const seen: Array<{
+      attempt: number;
+      contextAttempt: number | undefined;
+      cause: string | undefined;
+      wasOpen: boolean | undefined;
+    }> = [];
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        shouldReconnect: (context) => {
+          context.attempt = 99;
+          context.cause = 'error';
+          context.wasOpen = false;
+          return true;
+        },
+        backoff: (attempt, context) => {
+          seen.push({
+            attempt,
+            contextAttempt: context?.attempt,
+            cause: context?.cause,
+            wasOpen: context?.wasOpen
+          });
+          return 1_000;
+        }
+      }
+    });
+
+    socket().acceptConnection();
+    socket().serverClose({ code: 1006 });
+
+    expect(seen).toEqual([
+      {
+        attempt: 1,
+        contextAttempt: 1,
+        cause: 'close',
+        wasOpen: true
+      }
     ]);
     instance.destroy();
   });

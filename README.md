@@ -156,6 +156,29 @@ useSocket({
 });
 ```
 
+### A gateway that refuses the upgrade
+
+Not every rejection arrives as a useful close code. A gateway refusal can surface in the browser as `error` and `close: 1006` effectively together — no status, no reason, and the same code an ordinary network drop produces. In that event shape the close owns recovery, so neither `retryOnError` nor the close-code table can identify the rejection. A socket that retries drops aggressively can therefore retry a rejected token just as aggressively for as long as the tab stays open.
+
+`wasOpen` reports the distinction the close event does not carry: whether the attempt that just failed had reached `open`. It does not identify *why* an attempt failed. `false` covers every pre-open failure, including a rejected upgrade, DNS or TLS failure, unavailable network, connection timeout, or an error while resolving the URL or creating the transport.
+
+```ts
+const postOpen = linearBackoff({ stepMs: 200, maxDelayMs: 5_000 });
+const preOpen = exponentialBackoff({ initialDelayMs: 200, maxDelayMs: 60_000 });
+
+const socket = createSocket({
+  url: 'wss://api.example.com/feed',
+  reconnect: {
+    // Recover a dropped session quickly. Back off any attempt that never
+    // opened — including a rejected handshake — to roughly one per minute.
+    backoff: (attempt, context) =>
+      context?.wasOpen ? postOpen(attempt) : preOpen(attempt)
+  }
+});
+```
+
+When the goal is to keep retrying at a cheaper cadence, prefer this to capping `attempts`: one hard budget is shared by pre-open failures and long outages, and can strand a socket that would otherwise have recovered. `attempt` resets on every successful open, so a healthy connection never accumulates delay.
+
 ### Request/response over the socket
 
 ```ts

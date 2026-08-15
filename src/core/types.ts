@@ -226,6 +226,21 @@ export interface ReconnectContext {
   reason?: string;
   wasClean?: boolean;
   error?: unknown;
+  /**
+   * Whether the connection that just failed had reached `open`.
+   *
+   * This is the difference between a session that dropped and a handshake the
+   * server refused, and nothing else in this context carries it: a rejected
+   * upgrade surfaces as `error` plus `close: 1006` — the same code an ordinary
+   * network drop produces, with no status and no reason. Retrying the first
+   * aggressively is correct; retrying the second aggressively is a loop against
+   * a server that is turning you away.
+   *
+   * Scoped to the attempt that failed, not the socket's lifetime, so a token
+   * that expires mid-session is still reported as `false` on the attempts that
+   * follow.
+   */
+  wasOpen: boolean;
 }
 
 export interface ReconnectOptions {

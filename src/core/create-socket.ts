@@ -786,11 +786,6 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
       return;
     }
 
-    const decision: ReconnectContext = {
-      ...context,
-      attempt: nextAttempt
-    };
-
     const proceed = (allowed: boolean): void => {
       if (
         destroyed ||
@@ -812,7 +807,7 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
         delayMs =
           context.code !== undefined && isBackpressureClose(context.code)
             ? backpressureDelayMs
-            : backoff(nextAttempt);
+            : backoff(nextAttempt, { ...context, attempt: nextAttempt });
       } catch (error) {
         report(error, 'listener');
         if (decisionGeneration !== generation) return;
@@ -857,7 +852,10 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
     let allowed: boolean | Promise<boolean> = true;
     if (reconnectOptions.shouldReconnect) {
       try {
-        allowed = reconnectOptions.shouldReconnect(decision);
+        allowed = reconnectOptions.shouldReconnect({
+          ...context,
+          attempt: nextAttempt
+        });
       } catch (error) {
         report(error, 'listener');
         allowed = false;
@@ -904,7 +902,8 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
       code: event.code,
       category,
       reason: event.reason,
-      wasClean: event.wasClean
+      wasClean: event.wasClean,
+      wasOpen: openedThisAttempt
     };
 
     const notifyClose = (willReconnect: boolean): void => {
@@ -1031,7 +1030,12 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
       if (destroyed || generation !== recoveryGeneration + 1) return;
       rejectPendingRequests(new ConnectionClosedError());
       if (destroyed || generation !== recoveryGeneration + 1) return;
-      scheduleReconnect({ attempt, cause: 'error', error });
+      scheduleReconnect({
+        attempt,
+        cause: 'error',
+        error,
+        wasOpen: !failedBeforeOpen
+      });
     }, 50);
   };
 
@@ -1066,7 +1070,7 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
       if (destroyed || gen !== generation) return;
       report(error, 'connect');
       if (destroyed || gen !== generation) return;
-      scheduleReconnect({ attempt, cause: 'error', error });
+      scheduleReconnect({ attempt, cause: 'error', error, wasOpen: false });
       return;
     }
 
@@ -1142,17 +1146,21 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
       clearConnectTimer();
       connectTimer = setTimeout(() => {
         connectTimer = undefined;
-        if (gen !== generation || status === 'open' || destroyed) return;
+        if (!isCurrentTransport() || openedThisAttempt) return;
 
         emit({ type: 'connect-timeout', timeoutMs: connectTimeoutMs });
-        if (!isCurrentTransport()) return;
+        if (!isCurrentTransport() || openedThisAttempt) return;
         const timeoutGeneration = generation;
         abandonSocket();
         if (destroyed || generation !== timeoutGeneration + 1) return;
         metrics.failedAttempts += 1;
         noteDown();
         if (destroyed || generation !== timeoutGeneration + 1) return;
-        scheduleReconnect({ attempt, cause: 'connect-timeout' });
+        scheduleReconnect({
+          attempt,
+          cause: 'connect-timeout',
+          wasOpen: false
+        });
       }, connectTimeoutMs);
     }
   };
@@ -1198,7 +1206,7 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
       if (!isCurrentGeneration(gen)) return;
       report(error, 'url-resolution');
       if (!isCurrentGeneration(gen)) return;
-      scheduleReconnect({ attempt, cause: 'error', error });
+      scheduleReconnect({ attempt, cause: 'error', error, wasOpen: false });
       return;
     }
 
@@ -1209,7 +1217,7 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
         if (!isCurrentGeneration(gen)) return;
         report(error, 'url-resolution');
         if (!isCurrentGeneration(gen)) return;
-        scheduleReconnect({ attempt, cause: 'error', error });
+        scheduleReconnect({ attempt, cause: 'error', error, wasOpen: false });
       }
     );
   };
@@ -1220,6 +1228,9 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
     // status at 'closing'.
     if (destroyed || intentionallyClosed) return;
 
+    // Read before `abandonSocket()`, so a reentrant `openSocket` cannot clear
+    // the flag that describes the connection being abandoned here.
+    const wasOpen = openedThisAttempt;
     const forceGeneration = generation;
     abandonSocket();
     if (destroyed || generation !== forceGeneration + 1) return;
@@ -1227,7 +1238,7 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
     if (destroyed || generation !== forceGeneration + 1) return;
     rejectPendingRequests(new ConnectionClosedError());
     if (destroyed || generation !== forceGeneration + 1) return;
-    scheduleReconnect({ attempt, cause });
+    scheduleReconnect({ attempt, cause, wasOpen });
   };
 
   // ---------------------------------------------------------------------------
