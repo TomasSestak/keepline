@@ -786,11 +786,6 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
       return;
     }
 
-    const decision: ReconnectContext = {
-      ...context,
-      attempt: nextAttempt
-    };
-
     const proceed = (allowed: boolean): void => {
       if (
         destroyed ||
@@ -812,7 +807,7 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
         delayMs =
           context.code !== undefined && isBackpressureClose(context.code)
             ? backpressureDelayMs
-            : backoff(nextAttempt, decision);
+            : backoff(nextAttempt, { ...context, attempt: nextAttempt });
       } catch (error) {
         report(error, 'listener');
         if (decisionGeneration !== generation) return;
@@ -857,7 +852,10 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
     let allowed: boolean | Promise<boolean> = true;
     if (reconnectOptions.shouldReconnect) {
       try {
-        allowed = reconnectOptions.shouldReconnect(decision);
+        allowed = reconnectOptions.shouldReconnect({
+          ...context,
+          attempt: nextAttempt
+        });
       } catch (error) {
         report(error, 'listener');
         allowed = false;
@@ -1148,10 +1146,10 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
       clearConnectTimer();
       connectTimer = setTimeout(() => {
         connectTimer = undefined;
-        if (gen !== generation || status === 'open' || destroyed) return;
+        if (!isCurrentTransport() || openedThisAttempt) return;
 
         emit({ type: 'connect-timeout', timeoutMs: connectTimeoutMs });
-        if (!isCurrentTransport()) return;
+        if (!isCurrentTransport() || openedThisAttempt) return;
         const timeoutGeneration = generation;
         abandonSocket();
         if (destroyed || generation !== timeoutGeneration + 1) return;

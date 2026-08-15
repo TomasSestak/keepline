@@ -158,26 +158,26 @@ useSocket({
 
 ### A gateway that refuses the upgrade
 
-Not every rejection arrives as a close code. When a gateway refuses the WebSocket upgrade outright, the browser reports `error` and `close: 1006` in the same millisecond — no status, no reason, and the same code an ordinary network drop produces. Neither `retryOnError` nor the close-code table can classify it, so a socket that retries drops aggressively retries a rejected token just as aggressively, for as long as the tab stays open.
+Not every rejection arrives as a useful close code. A gateway refusal can surface in the browser as `error` and `close: 1006` effectively together — no status, no reason, and the same code an ordinary network drop produces. In that event shape the close owns recovery, so neither `retryOnError` nor the close-code table can identify the rejection. A socket that retries drops aggressively can therefore retry a rejected token just as aggressively for as long as the tab stays open.
 
-`wasOpen` is the distinction the close event does not carry: whether the attempt that just failed had reached `open`.
+`wasOpen` reports the distinction the close event does not carry: whether the attempt that just failed had reached `open`. It does not identify *why* an attempt failed. `false` covers every pre-open failure, including a rejected upgrade, DNS or TLS failure, unavailable network, connection timeout, or an error while resolving the URL or creating the transport.
 
 ```ts
-const dropped = linearBackoff({ stepMs: 200, maxDelayMs: 5_000 });
-const refused = exponentialBackoff({ initialDelayMs: 200, maxDelayMs: 60_000 });
+const postOpen = linearBackoff({ stepMs: 200, maxDelayMs: 5_000 });
+const preOpen = exponentialBackoff({ initialDelayMs: 200, maxDelayMs: 60_000 });
 
 const socket = createSocket({
   url: 'wss://api.example.com/feed',
   reconnect: {
-    // A dropped session recovers immediately. A handshake that never opened
-    // backs off to roughly one attempt a minute instead of one every 5s.
+    // Recover a dropped session quickly. Back off any attempt that never
+    // opened — including a rejected handshake — to roughly one per minute.
     backoff: (attempt, context) =>
-      context?.wasOpen ? dropped(attempt) : refused(attempt)
+      context?.wasOpen ? postOpen(attempt) : preOpen(attempt)
   }
 });
 ```
 
-Prefer this to capping `attempts`: a budget spent on a refused handshake is also spent by a long outage, and strands a socket that would otherwise have come back on its own. `attempt` resets on every successful open, so a healthy connection never accumulates delay.
+When the goal is to keep retrying at a cheaper cadence, prefer this to capping `attempts`: one hard budget is shared by pre-open failures and long outages, and can strand a socket that would otherwise have recovered. `attempt` resets on every successful open, so a healthy connection never accumulates delay.
 
 ### Request/response over the socket
 

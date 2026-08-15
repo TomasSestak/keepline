@@ -454,6 +454,37 @@ describe('generation-scoped async work', () => {
     instance.destroy();
   });
 
+  it('keeps the current transport when a connect-timeout listener opens it', async () => {
+    vi.useFakeTimers();
+    const backoffContexts: Array<boolean | undefined> = [];
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      connectTimeoutMs: 1,
+      reconnect: {
+        backoff: (_attempt, context) => {
+          backoffContexts.push(context?.wasOpen);
+          return 10;
+        }
+      },
+      onEvent: (event) => {
+        if (event.type === 'connect-timeout') socket().acceptConnection();
+      }
+    });
+    const transport = socket();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(instance.status).toBe('open');
+    expect(instance.metrics.connections).toBe(1);
+    expect(transport.readyState).toBe(MockWebSocket.OPEN);
+    expect(backoffContexts).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(instance.status).toBe('open');
+    instance.destroy();
+  });
+
   it('keeps the nested reconnect when transport close reenters reconnect', () => {
     const transports: EventTargetSocket[] = [];
     const holder: { instance?: ReturnType<typeof createSocket> } = {};
@@ -2153,16 +2184,17 @@ describe('ReconnectContext.wasOpen', () => {
     instance.destroy();
   });
 
-  it('is passed to the backoff strategy so a refused handshake can cost more', () => {
+  it('passes attempt state to backoff and honours both selected delays', async () => {
     vi.useFakeTimers();
-    const delays: Array<{ attempt: number; wasOpen?: boolean }> = [];
+    const delays: Array<{ attempt: number; wasOpen: boolean }> = [];
     const instance = createSocket({
       url: 'wss://x',
       socketFactory: mockSocketFactory,
       reconnect: {
         backoff: (attempt, context) => {
-          delays.push({ attempt, wasOpen: context?.wasOpen });
-          return context?.wasOpen ? 10 : 1000;
+          if (!context) throw new Error('missing reconnect context');
+          delays.push({ attempt, wasOpen: context.wasOpen });
+          return context.wasOpen ? 10 : 1000;
         }
       }
     });
@@ -2171,8 +2203,65 @@ describe('ReconnectContext.wasOpen', () => {
     socket().serverClose({ code: 1006 });
     expect(delays).toEqual([{ attempt: 1, wasOpen: true }]);
 
-    // The fast retry the dropped session earned.
-    vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(9);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    socket().serverError();
+    socket().serverClose({ code: 1006 });
+    expect(delays).toEqual([
+      { attempt: 1, wasOpen: true },
+      { attempt: 2, wasOpen: false }
+    ]);
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(3);
+    instance.destroy();
+  });
+
+  it('passes authoritative context to backoff after policy mutation', () => {
+    const seen: Array<{
+      attempt: number;
+      contextAttempt: number | undefined;
+      cause: string | undefined;
+      wasOpen: boolean | undefined;
+    }> = [];
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: {
+        shouldReconnect: (context) => {
+          context.attempt = 99;
+          context.cause = 'error';
+          context.wasOpen = false;
+          return true;
+        },
+        backoff: (attempt, context) => {
+          seen.push({
+            attempt,
+            contextAttempt: context?.attempt,
+            cause: context?.cause,
+            wasOpen: context?.wasOpen
+          });
+          return 1_000;
+        }
+      }
+    });
+
+    socket().acceptConnection();
+    socket().serverClose({ code: 1006 });
+
+    expect(seen).toEqual([
+      {
+        attempt: 1,
+        contextAttempt: 1,
+        cause: 'close',
+        wasOpen: true
+      }
+    ]);
     instance.destroy();
   });
 });
