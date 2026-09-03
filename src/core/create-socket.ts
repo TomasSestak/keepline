@@ -420,7 +420,7 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
         emit({ type: 'validation-error', issues: settled.issues, value });
         report(
           new ValidationError(formatIssues(settled.issues), settled.issues),
-          'socket',
+          'validation',
           false
         );
         return;
@@ -442,7 +442,7 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
       if (!isCurrentGeneration(gen)) return;
       metrics.decodeErrors += 1;
       emit({ type: 'decode-error', error, data });
-      report(error, 'socket', false);
+      report(error, 'decode', false);
     };
 
     try {

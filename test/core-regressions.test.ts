@@ -2265,3 +2265,58 @@ describe('ReconnectContext.wasOpen', () => {
     instance.destroy();
   });
 });
+
+describe('ErrorPhase discrimination', () => {
+  it('separates an undecodable frame from a bare transport error', () => {
+    vi.useFakeTimers();
+    const phases: ErrorPhase[] = [];
+    const instance = createSocket({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      reconnect: false,
+      onError: (_error, phase) => phases.push(phase)
+    });
+
+    socket().acceptConnection();
+    socket().serverSendRaw('{ not json');
+    socket().serverError();
+
+    // Both used to arrive as 'socket', so the only way to tell a malformed
+    // payload from an ordinary disconnect was an instanceof check.
+    expect(phases).toEqual(['decode', 'socket']);
+    expect(instance.metrics.decodeErrors).toBe(1);
+    instance.destroy();
+  });
+
+  it('reports a schema rejection as validation, not socket', () => {
+    const schema: StandardSchemaV1<unknown, { id: number }> = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        validate: (value) =>
+          typeof (value as { id?: unknown }).id === 'number'
+            ? { value: value as { id: number } }
+            : { issues: [{ message: 'id must be a number' }] }
+      }
+    };
+    const phases: ErrorPhase[] = [];
+    const received: Array<{ id: number }> = [];
+    const instance = createSocket<{ id: number }>({
+      url: 'wss://x',
+      socketFactory: mockSocketFactory,
+      schema,
+      reconnect: false,
+      onMessage: (message) => received.push(message),
+      onError: (_error, phase) => phases.push(phase)
+    });
+
+    socket().acceptConnection();
+    socket().serverSend({ id: 'nope' });
+    socket().serverSend({ id: 7 });
+
+    expect(phases).toEqual(['validation']);
+    expect(received).toEqual([{ id: 7 }]);
+    expect(instance.metrics.validationErrors).toBe(1);
+    instance.destroy();
+  });
+});
