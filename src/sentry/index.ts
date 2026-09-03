@@ -30,9 +30,11 @@ export interface SentryReporterOptions {
    * Decide which events become captured exceptions rather than breadcrumbs.
    *
    * The default captures only what a human should look at: exhausted retries,
-   * and errors thrown by your own encode/listener code. Ordinary disconnects and
-   * reconnects stay breadcrumbs — a socket that drops on a train is not an
-   * incident, and treating it as one trains everyone to ignore the alerts.
+   * frames that failed to decode or validate, refused writes, and errors thrown
+   * by your own encode/listener code. Ordinary disconnects and reconnects stay
+   * breadcrumbs, as does the transport's contentless `error` event — a socket
+   * that drops on a train is not an incident, and treating it as one trains
+   * everyone to ignore the alerts.
    */
   shouldCapture?: (event: KeeplineEvent) => boolean;
   /**
@@ -64,8 +66,14 @@ const defaultRedactUrl = (url: string): string => {
 
 const defaultShouldCapture = (event: KeeplineEvent): boolean => {
   if (event.type === 'gave-up') return true;
-  if (event.type === 'error')
-    return event.phase === 'listener' || event.phase === 'encode';
+  // A frame the app could not use is a defect on one side of the wire or the
+  // other. These arrive as their own event types, never as `error` — the core
+  // reports them without re-emitting.
+  if (event.type === 'decode-error' || event.type === 'validation-error')
+    return true;
+  // Every phase but `socket` carries a real error. `socket` is the bare browser
+  // event: no status, no reason, one per ordinary disconnect.
+  if (event.type === 'error') return event.phase !== 'socket';
   return false;
 };
 

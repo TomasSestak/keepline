@@ -277,18 +277,23 @@ import { createSentryReporter } from 'keepline/sentry';
 createSocket({ url, onEvent: createSentryReporter({ sentry: Sentry }) });
 ```
 
-Breadcrumbs for connects, close codes, retries and validation failures; captured exceptions only for exhausted retries and errors thrown by your own code. URLs are stripped of query strings by default, and payloads are never recorded unless you ask — tokens live in query strings and breadcrumbs are forever.
+Breadcrumbs for connects, close codes, retries and validation failures; captured exceptions for exhausted retries and every failure that carries a real error — everything except the transport's contentless `error` event. URLs are stripped of query strings by default, and payloads are never recorded unless you ask — tokens live in query strings and breadcrumbs are forever.
 
 When an unrelated exception is reported ten seconds after the feed quietly dropped and retried four times, that trail is the difference between a five-minute diagnosis and an unreproducible ticket.
 
-Wiring `onError` into a tracker yourself? Filter on `phase`. `socket` is the browser's bare `error` event — no status, no reason, and it fires on ordinary disconnects — so capturing it yields one exception per user per session and nothing to act on. `decode` and `validation` are the actionable half: a frame arrived that your app could not use.
+Wiring `onError` into a tracker yourself? Filter on `phase`, and `socket` is the only one to drop. It is the browser's bare `error` event — no status, no reason, and it fires on ordinary disconnects — so capturing it yields one exception per user per session and nothing to act on. Every other phase carries a real error: `decode` and `validation` mean a frame arrived your app could not use, `send` means the transport refused a write, and `encode` and `listener` are a throw from your own code.
 
 ```ts
-onError: (error, phase) => {
-  if (phase === 'socket') return;
-  Sentry.captureException(error);
-};
+createSocket({
+  url,
+  onError: (error, phase) => {
+    if (phase === 'socket') return;
+    Sentry.captureException(error);
+  }
+});
 ```
+
+`createSentryReporter` applies exactly this rule, so `onEvent: createSentryReporter({ sentry: Sentry })` needs no filter of its own.
 
 ## Testing
 
