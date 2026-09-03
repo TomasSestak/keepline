@@ -197,6 +197,50 @@ describe('createSentryReporter', () => {
     });
   });
 
+  it('captures payload and write failures but never the bare socket event', () => {
+    const sentry = createSentry();
+    const report = createSentryReporter({ sentry });
+    const decodeError = new SyntaxError('Unexpected token n in JSON');
+    const sendError = new Error('transport refused the frame');
+
+    report({
+      type: 'decode-error',
+      error: decodeError,
+      data: 'not json',
+      at: 1
+    });
+    report({
+      type: 'validation-error',
+      issues: [{ message: 'id must be a number' }],
+      value: { id: 'nope' },
+      at: 2
+    });
+    report({ type: 'error', error: sendError, phase: 'send', at: 3 });
+    report({
+      type: 'error',
+      error: new Error('WebSocket error event'),
+      phase: 'socket',
+      at: 4
+    });
+
+    // The README tells hand-rolled reporters that everything but `socket`
+    // carries a real error. The shipped reporter used to capture only
+    // listener/encode, so a malformed frame from your own backend was a
+    // breadcrumb and nothing else.
+    expect(sentry.captureException).toHaveBeenCalledTimes(3);
+    // Payload failures are wrapped for a stable grouping title, with the
+    // original kept as `cause`; an `error` event is captured as-is.
+    expect(sentry.captureException.mock.calls[0]?.[0]).toMatchObject({
+      cause: decodeError
+    });
+    expect(sentry.captureException.mock.calls[2]?.[0]).toBe(sendError);
+    expect(
+      sentry.captureException.mock.calls.map(
+        ([, hint]) => hint?.tags?.['keepline.event']
+      )
+    ).toEqual(['decode-error', 'validation-error', 'error']);
+  });
+
   it('supports payload opt-in and custom capture, category, and URL policies', () => {
     const sentry = createSentry();
     const shouldCapture = vi.fn(

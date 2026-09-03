@@ -2288,6 +2288,31 @@ describe('ErrorPhase discrimination', () => {
     instance.destroy();
   });
 
+  it('reports a refused write as send, not socket', () => {
+    const phases: ErrorPhase[] = [];
+    const transport = new EventTargetSocket('wss://x');
+    transport.send = () => {
+      throw new Error('transport refused the frame');
+    };
+
+    const instance = createSocket<unknown, { ping: true }>({
+      url: 'wss://x',
+      socketFactory: () => transport,
+      reconnect: false,
+      onError: (_error, phase) => phases.push(phase)
+    });
+
+    transport.accept();
+    const written = instance.send({ ping: true });
+
+    // A refused write carries a real error with a message and a stack. Sharing
+    // 'socket' with the contentless browser event meant the documented noise
+    // filter discarded it.
+    expect(written).toBe(false);
+    expect(phases).toEqual(['send']);
+    instance.destroy();
+  });
+
   it('reports a schema rejection as validation, not socket', () => {
     const schema: StandardSchemaV1<unknown, { id: number }> = {
       '~standard': {

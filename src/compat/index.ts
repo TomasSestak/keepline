@@ -47,6 +47,17 @@ export interface CompatHeartbeatOptions {
 export interface CompatOptions {
   onOpen?: (event: Event) => void;
   onClose?: (event: CloseEvent) => void;
+  /**
+   * Receives an `Event`, like the library this replaces — so every failure
+   * reaches it stripped of detail, including the ones that had some. A decode
+   * or validation failure is not an `Event`, so it arrives as a synthetic
+   * `error` event indistinguishable from an ordinary disconnect.
+   *
+   * Preserving that shape is the point of this module, so the phase split in
+   * `ErrorPhase` cannot be exposed here. Wiring failures into an error tracker
+   * is a reason to use the core API's `onError`/`onEvent` instead of this
+   * callback — see MIGRATION.md.
+   */
   onError?: (event: Event) => void;
   onMessage?: (event: MessageEvent) => void;
   onReconnectStop?: (attempts: number) => void;

@@ -526,7 +526,7 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
     try {
       socket.send(data);
     } catch (error) {
-      report(error, 'socket');
+      report(error, 'send');
       return false;
     }
 
@@ -1618,7 +1618,7 @@ export const createSocket = <TIn = unknown, TOut = unknown>(
       try {
         socket.send(data);
       } catch (error) {
-        report(error, 'socket');
+        report(error, 'send');
         return false;
       }
       metrics.messagesSent += 1;

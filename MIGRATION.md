@@ -27,6 +27,34 @@ These are deliberate. Each one is a bug in the old default rather than a missing
 | **`heartbeat.timeout`** | Closes the socket after N ms of silence | Forces a reconnect after N ms without a pong. Same intent, and it also detects a half-open socket. |
 | **Sends before open** | Dropped unless `keep` was used | Queued (bounded, 64 items) and flushed in order on open. `keep: false` keeps its meaning: the message is dropped instead of queued. |
 | **Malformed JSON** | `lastJsonMessage` becomes `null` | Same; the compatibility hook keeps the raw `MessageEvent` available as `lastMessage`. |
+| **`onError` detail** | Receives a bare `Event` | Same — deliberately. Read the next section before wiring it into an error tracker. |
+
+### `onError` here cannot tell failures apart
+
+`react-use-websocket` hands `onError` a DOM `Event`, and `keepline/compat` keeps
+that signature. The cost is that every failure arrives flattened: a decode
+failure and a schema rejection are not `Event`s, so they reach you as a
+synthetic `error` event indistinguishable from an ordinary disconnect.
+
+That matters because the browser's own `error` event fires on *every* ordinary
+disconnect and carries no status and no reason. Piping this callback straight
+into an error tracker reports roughly one contentless exception per user per
+session, and nothing in the argument lets you filter it out.
+
+The core API separates them. `onError(error, phase)` gives you an `ErrorPhase`,
+where `socket` is the unactionable browser event and `decode`, `validation`,
+`send`, `encode` and `listener` each carry a real error:
+
+```ts
+onError: (error, phase) => {
+  if (phase === 'socket') return;
+  Sentry.captureException(error);
+}
+```
+
+Or skip the wiring entirely — `onEvent: createSentryReporter({ sentry: Sentry })`
+from `keepline/sentry` already applies that rule. Either way, move the call site
+to `keepline/react` (Step 2) first.
 
 ## Step 2 — move call sites to `keepline/react`
 
