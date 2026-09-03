@@ -114,11 +114,31 @@ export type ReconnectCause =
 
 export type DropReason = 'queue-full' | 'queue-disabled' | 'destroyed';
 
+/**
+ * Which part of the socket's work failed.
+ *
+ * The distinction that matters for error reporting is whether anyone can act on
+ * the failure. `socket` is the transport reporting trouble it will not
+ * describe: a browser's `error` event is a bare `Event` with no status and no
+ * reason, by design, and it fires on ordinary disconnects. `decode` and
+ * `validation` mean a frame arrived that the application could not use, which
+ * is a defect on one side or the other. `encode` and `listener` are a throw
+ * from code the caller supplied.
+ */
 export type ErrorPhase =
+  /** Resolving a `url` function or promise threw. */
   | 'url-resolution'
+  /** `socketFactory` threw, so no transport was created. */
   | 'connect'
+  /** The transport emitted `error`, or `send()` threw. Carries no detail. */
   | 'socket'
+  /** An inbound frame could not be decoded — `JSON.parse`, or your `decode`. */
+  | 'decode'
+  /** An inbound frame decoded, then failed `schema` validation. */
+  | 'validation'
+  /** `encode` threw while serializing an outbound payload. */
   | 'encode'
+  /** One of the caller's own callbacks or listeners threw. */
   | 'listener';
 
 /**
@@ -361,6 +381,12 @@ export interface SocketOptions<TIn = unknown, TOut = unknown> {
   onOpen?: (context: OpenContext<TOut>) => void;
   onMessage?: (message: TIn) => void;
   onClose?: (context: CloseContext) => void;
+  /**
+   * Every failure the socket sees, flattened, with {@link ErrorPhase} saying
+   * which kind. Reporting all of it to an error tracker will bury you: `socket`
+   * fires on every ordinary disconnect and carries nothing to act on. Filter on
+   * `phase`.
+   */
   onError?: (error: unknown, phase: ErrorPhase) => void;
   /** Firehose of {@link KeeplineEvent}. The observability seam. */
   onEvent?: (event: KeeplineEvent<TIn, TOut>) => void;

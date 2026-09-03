@@ -281,6 +281,15 @@ Breadcrumbs for connects, close codes, retries and validation failures; captured
 
 When an unrelated exception is reported ten seconds after the feed quietly dropped and retried four times, that trail is the difference between a five-minute diagnosis and an unreproducible ticket.
 
+Wiring `onError` into a tracker yourself? Filter on `phase`. `socket` is the browser's bare `error` event — no status, no reason, and it fires on ordinary disconnects — so capturing it yields one exception per user per session and nothing to act on. `decode` and `validation` are the actionable half: a frame arrived that your app could not use.
+
+```ts
+onError: (error, phase) => {
+  if (phase === 'socket') return;
+  Sentry.captureException(error);
+};
+```
+
 ## Testing
 
 ```ts
