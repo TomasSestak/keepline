@@ -981,3 +981,43 @@ describe('useSocketSubscription', () => {
     ]);
   });
 });
+
+describe('useSocket error phases', () => {
+  it('forwards the core phase for payload failures instead of relabelling them', () => {
+    const onError = vi.fn();
+    const schema = {
+      '~standard': {
+        version: 1 as const,
+        vendor: 'test',
+        validate: (value: unknown) =>
+          typeof (value as { id?: unknown }).id === 'number'
+            ? { value: value as { id: number } }
+            : { issues: [{ message: 'id must be a number' }] }
+      }
+    };
+
+    renderHook(() =>
+      useSocket<{ id: number }>({
+        url: 'wss://phases',
+        reconnect: false,
+        socketFactory: mockSocketFactory,
+        schema,
+        onError
+      })
+    );
+
+    act(() => socket().acceptConnection());
+    act(() => socket().serverSendRaw('{ not json'));
+    act(() => socket().serverSend({ id: 'nope' }));
+    act(() => socket().serverError());
+
+    // The hook used to hardcode 'socket' for both payload cases, which put
+    // them back in the same bucket as the browser's contentless error event
+    // and left `phase` useless for deciding what to report.
+    expect(onError.mock.calls.map(([, phase]) => phase)).toEqual([
+      'decode',
+      'validation',
+      'socket'
+    ]);
+  });
+});
