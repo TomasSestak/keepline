@@ -1,6 +1,6 @@
 {
   "name": "keepline",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Typed, dependency-free WebSocket client with resilient reconnection, heartbeats, queues, schema validation, subscriptions, observability, and React 18+ bindings.",
   "keywords": [
     "websocket",
