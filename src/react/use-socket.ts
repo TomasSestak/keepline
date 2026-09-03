@@ -234,12 +234,12 @@ export const useSocket = <TIn = unknown, TOut = unknown>(
             notifyError(event.error, event.phase);
             break;
           case 'decode-error':
-            notifyError(event.error, 'socket');
+            notifyError(event.error, 'decode');
             break;
           case 'validation-error':
             notifyError(
               new ValidationError(formatIssues(event.issues), event.issues),
-              'socket'
+              'validation'
             );
             break;
         }
