@@ -37,7 +37,8 @@ const entryPoints = [
   'keepline/compat',
   'keepline/testing',
   'keepline/sentry',
-  'keepline/logger'
+  'keepline/logger',
+  'keepline/socket-io'
 ];
 
 try {
@@ -130,7 +131,8 @@ try {
     'keepline/compat': 'useWebSocket',
     'keepline/testing': 'MockWebSocket',
     'keepline/sentry': 'createSentryReporter',
-    'keepline/logger': 'createConsoleLogger'
+    'keepline/logger': 'createConsoleLogger',
+    'keepline/socket-io': 'socketIo'
   };
   await writeFile(
     join(temporary, 'esm.mjs'),
@@ -169,6 +171,7 @@ import { ReadyState, useWebSocket, type CompatOptions } from 'keepline/compat';
 import { MockWebSocket, type InstallOptions } from 'keepline/testing';
 import { createSentryReporter, type SentryLike } from 'keepline/sentry';
 import { createConsoleLogger, type ConsoleLoggerOptions } from 'keepline/logger';
+import { socketIo, socketIoUrl, type SocketIoMessage } from 'keepline/socket-io';
 
 const hookOptions: UseSocketOptions = { url: null };
 const compatOptions: CompatOptions = { reconnectAttempts: 1 };
@@ -189,6 +192,13 @@ native?.dispatchEvent(new Event('package-smoke'));
 void [useSocket, hookOptions, useWebSocket, ReadyState, compatOptions, MockWebSocket, installOptions];
 createSentryReporter({ sentry });
 createConsoleLogger(loggerOptions);
+const io = socketIo<{ NEW: (id: number) => void }, { read: (id: number) => void }>({ auth: () => ({ token: 't' }) });
+const ioSocket = createSocket({ url: socketIoUrl('https://example.test'), ...io.options });
+io.on(ioSocket, 'NEW', (id: number) => void id);
+io.emit(ioSocket, 'read', 1);
+// @ts-expect-error Emits are checked against the event map.
+io.emit(ioSocket, 'read', 'one');
+ioSocket.onMessage((message: SocketIoMessage<{ NEW: (id: number) => void }>) => void message);
 `
   );
   await writeFile(
@@ -199,6 +209,7 @@ import compat = require('keepline/compat');
 import testing = require('keepline/testing');
 import sentryEntry = require('keepline/sentry');
 import logger = require('keepline/logger');
+import socketIoEntry = require('keepline/socket-io');
 
 const hookOptions: react.UseSocketOptions = { url: null };
 const compatOptions: compat.CompatOptions = { reconnectAttempts: 1 };
@@ -219,6 +230,8 @@ native?.dispatchEvent(new Event('package-smoke'));
 void [react.useSocket, hookOptions, compat.useWebSocket, compat.ReadyState, compatOptions, testing.MockWebSocket, installOptions];
 sentryEntry.createSentryReporter({ sentry });
 logger.createConsoleLogger(loggerOptions);
+const io = socketIoEntry.socketIo();
+keepline.createSocket({ url: socketIoEntry.socketIoUrl('https://example.test'), ...io.options }).destroy();
 `
   );
   await writeFile(

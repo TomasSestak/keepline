@@ -124,6 +124,7 @@ Core stays under **6 kB** brotli and React bindings under **8 kB**, with both bu
 | `keepline/testing` | `MockWebSocket`, `installMockWebSocket`, `mockSocketFactory` |
 | `keepline/sentry` | `createSentryReporter` — breadcrumbs and exceptions, no `@sentry/*` dependency |
 | `keepline/logger` | `createConsoleLogger` |
+| `keepline/socket-io` | `socketIo`, `socketIoUrl` — talk to a Socket.IO v4 server without `socket.io-client` |
 
 ## Recipes
 
@@ -224,6 +225,71 @@ const socket = createSocket<ServerMessage, ClientMessage>({
   encode: (payload) => encode(payload)
 });
 ```
+
+### Socket.IO servers
+
+`keepline/socket-io` lets a keepline socket talk to a Socket.IO v4 server (Engine.IO v4, Socket.IO protocol v5) over a plain WebSocket. Use it when the server speaks Socket.IO but you want keepline's reconnection, status and observability, or simply don't want `socket.io-client` in the bundle. It is a codec, not a second client: it plugs into `createSocket` and `useSocket` through their options.
+
+```ts
+import { createSocket } from 'keepline';
+import { socketIo, socketIoUrl } from 'keepline/socket-io';
+
+interface ServerEvents { NEW: (notification: Notification) => void }
+interface ClientEvents { markRead: (id: string) => void }
+
+const io = socketIo<ServerEvents, ClientEvents>({
+  auth: async () => ({ token: `Bearer ${await auth.getFreshToken()}` }), // re-run on every connect
+  namespace: '/',                                                      // the default
+  onConnectError: (error) => log.warn(error.message, error.data)
+});
+
+const socket = createSocket({
+  url: socketIoUrl('https://api.example.com', { language: 'en' }),
+  ...io.options
+});
+
+io.on(socket, 'NEW', (notification) => show(notification));
+io.emit(socket, 'markRead', id);   // queued until the server admits us
+```
+
+The event maps use the same shape as `socket.io`'s typed events, so existing interfaces can be reused. Every inbound event is also an ordinary keepline message, `{ event, args }`, so `socket.onMessage`, `useSocketMessage` and `useLastMessage` work as usual; `message.event === 'NEW'` narrows `args`. In React, spread `io.options` into `useSocket` and pass its result to `io.emit`. Create the codec once (module scope or `useMemo`), not per render: the hook keeps the codec it was created with. Make `auth` a function that reads the *current* token, so it is fresh on every reconnect. With `share: true`, give each namespace its own `key`, because the namespace is not part of the URL.
+
+What it handles, per connection:
+
+| Frame | From | Handling |
+| --- | --- | --- |
+| `0{…pingInterval, pingTimeout…}` | server | Engine.IO handshake. Answered with CONNECT: `40`, `40{auth}`, or `40/ns,{auth}` for a namespace. |
+| `40{"sid":…}` | server | CONNECT acknowledged. Only now does keepline report `open` and flush its queue. |
+| `2` | server | Ping, answered with `3` at once. If none arrives within `pingInterval + pingTimeout`, the connection is closed as `1006 socket.io: ping timeout` and retried. |
+| `42[name, …args]`, `42/ns,[…]` | both | Events. |
+| `44{"message":…}` | server | CONNECT_ERROR: a refusal, see below. |
+| `41`, `1` | server | Namespace disconnect / Engine.IO close: an ordinary disconnect, closed as `1000`/`1001` and retried. |
+
+`status === 'open'` therefore means the server acknowledged the CONNECT, not merely that the WebSocket opened, and keepline's `connectTimeoutMs` covers the whole handshake. Liveness comes from the server's own ping cadence, so leave `heartbeat` and `staleAfterMs` unset.
+
+**Refused connections are not retried.** A server refuses in one of two ways: a `44` CONNECT_ERROR (an auth middleware calling `next(new Error(...))`), or closing the WebSocket right after the client's `40`, typically with a bare `1006`. Both are reported as a `1008` close (`category: 'policy'`, exported as `REFUSED_CLOSE_CODE`), which keepline never retries, so an expired token does not turn into a reconnect loop. A throwing `auth()` is treated the same way. The socket settles `closed`, and the app calls `socket.reconnect()` once it has fresh credentials:
+
+```ts
+onClose: ({ category, willReconnect }) => {
+  if (category === 'policy' && !willReconnect) refreshThenReconnect();
+}
+```
+
+A close *before* the Engine.IO handshake is still an ordinary network failure and is retried, as is a close carrying a deliberate "come back later" code (1001, 1012, 1013, 1014) even while the CONNECT is pending. Any other close in that window can't be told apart from a refusal, so it counts as one.
+
+A server-side `socket.disconnect()` is retried like any other disconnect. If your server uses it to kick clients, veto that one case, or the client reconnects straight back:
+
+```ts
+reconnect: {
+  shouldReconnect: ({ reason }) => reason !== 'socket.io: server disconnected the namespace'
+}
+```
+
+Tokens don't have to come from the browser at all: a proxy in front of the Socket.IO server can inject them into the CONNECT, in which case the client sends a bare `40` and needs no `auth` option.
+
+Pass a custom WebSocket constructor (`ws` on Node < 22, `mockSocketFactory` in tests) as `socketIo({ socketFactory })`, not to `createSocket`, where it would replace the codec's own.
+
+Out of scope, by design: the long-polling transport (the URL always asks for `transport=websocket`), binary attachments (`45`/`46`), and acknowledgements (`43`, or an event that asks for one). These arrive as `decode-error` events naming what came in, never as silently wrong messages, and an outbound payload containing binary is refused at `encode` rather than sent as `{}`.
 
 ### In a Node service
 
