@@ -291,7 +291,7 @@ onConnectError: (error) => {
 }
 ```
 
-A close *before* the Engine.IO handshake is still an ordinary network failure and is retried, as is a close carrying a deliberate "come back later" code (1001, 1012, 1013, 1014) even while the CONNECT is pending. Any other close in that window can't be told apart from a refusal, so it counts as one.
+A close *before* the CONNECT is sent (before the Engine.IO handshake, or while an async `auth()` resolves) is still an ordinary network failure and is retried, as is a close carrying a deliberate "come back later" code (1001, 1012, 1013, 1014) even while the CONNECT is pending. Any other close in that window can't be told apart from a refusal, so it counts as one.
 
 A server-side `socket.disconnect()` is retried like any other disconnect. If your server uses it to kick clients, veto that one case, or the client reconnects straight back:
 

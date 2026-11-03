@@ -88,9 +88,10 @@ export interface SocketIoOptions {
    * `message`/`data`), a failed `auth()` (`'auth-failed'`), the server ending
    * the session instead of acknowledging (`'session-ended'`), or the
    * connection dropping before the acknowledgement (`'closed-before-ack'`,
-   * with `closeCode`). Closes that are retried — a network drop before the
-   * Engine.IO handshake, a 1001/1012/1013/1014 "come back later", or
-   * `socket.close()` — are not refusals and do not call it.
+   * with `closeCode`). Closes that are retried — a drop before the CONNECT is
+   * sent (before the Engine.IO handshake, or while `auth()` resolves), a
+   * 1001/1012/1013/1014 "come back later" — and `socket.close()` are not
+   * refusals and do not call it.
    */
   onConnectError?: (error: SocketIoConnectError) => void;
   /**

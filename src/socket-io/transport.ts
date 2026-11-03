@@ -176,8 +176,14 @@ export const wrapTransport = (
     raw.removeEventListener('close', onRawClose);
   };
 
-  /** Report a close keepline should act on, and drop the raw transport. */
-  const terminate = (event: CloseEventShape): void => {
+  /**
+   * Report a close keepline should act on, and drop the raw transport.
+   * `beforeClose` runs once the transport is released, right before the close.
+   */
+  const terminate = (
+    event: CloseEventShape,
+    beforeClose?: () => void
+  ): void => {
     if (phase === 'done') return;
     phase = 'done';
     clearPingTimer();
@@ -190,6 +196,7 @@ export const wrapTransport = (
     const held = heldError;
     heldError = undefined;
     if (held) dispatch('error', held.event);
+    beforeClose?.();
     dispatch('close', event);
   };
 
@@ -197,18 +204,21 @@ export const wrapTransport = (
    * The one way a CONNECT is refused: tell the app, then close with 1008.
    * `closeReason` defaults to the error's message.
    */
-  const refuse = (error: SocketIoConnectError, closeReason?: string): void => {
-    try {
-      config.onConnectError?.(error);
-    } catch {
-      // A throwing observer must not keep a refused session alive.
-    }
-    terminate({
-      code: REFUSED_CLOSE_CODE,
-      reason: closeReason ?? `socket.io: ${error.message}`,
-      wasClean: false
-    });
-  };
+  const refuse = (error: SocketIoConnectError, closeReason?: string): void =>
+    terminate(
+      {
+        code: REFUSED_CLOSE_CODE,
+        reason: closeReason ?? `socket.io: ${error.message}`,
+        wasClean: false
+      },
+      () => {
+        try {
+          config.onConnectError?.(error);
+        } catch {
+          // A throwing observer must not keep a refused session alive.
+        }
+      }
+    );
 
   const failAuth = (error: unknown): void => {
     if (phase !== 'authorizing' || clientClosed) return;

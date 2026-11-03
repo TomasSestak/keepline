@@ -52,11 +52,17 @@ const setup = (
   return { io, socket, events };
 };
 
-/** Drive one connection through WebSocket open, handshake and CONNECT ack. */
-const connect = async (ws = last(), ack = '40{"sid":"s1"}') => {
+/** Drive one connection up to a pending CONNECT (sent, not acknowledged). */
+const awaitAck = async (ws = last()) => {
   ws.acceptConnection();
   ws.serverSendRaw(HANDSHAKE);
   await Promise.resolve();
+  expect(ws.sent).toHaveLength(1);
+};
+
+/** Drive one connection through WebSocket open, handshake and CONNECT ack. */
+const connect = async (ws = last(), ack = '40{"sid":"s1"}') => {
+  await awaitAck(ws);
   ws.serverSendRaw(ack);
 };
 
@@ -67,14 +73,6 @@ const ofType = <T extends KeeplineEvent['type']>(
   events.filter(
     (e): e is Extract<KeeplineEvent, { type: T }> => e.type === type
   );
-
-/** Drive one connection up to a pending CONNECT (sent, not acknowledged). */
-const awaitAck = async (ws = last()) => {
-  ws.acceptConnection();
-  ws.serverSendRaw(HANDSHAKE);
-  await Promise.resolve();
-  expect(ws.sent).toHaveLength(1);
-};
 
 /** The single `onConnectError` call, asserting there was exactly one. */
 const onlyCall = (fn: ReturnType<typeof vi.fn>): SocketIoConnectError => {
@@ -401,7 +399,10 @@ describe('refused connections stop reconnecting', () => {
 
   it('treats a close right after CONNECT as a refusal, however late the close', async () => {
     vi.useFakeTimers();
-    const onConnectError = vi.fn();
+    let seenByCallback: string[] = [];
+    const onConnectError = vi.fn(() => {
+      seenByCallback = events.map((event) => event.type);
+    });
     const { socket, events } = setup({ onConnectError });
     last().acceptConnection();
     last().serverSendRaw(HANDSHAKE);
@@ -422,6 +423,9 @@ describe('refused connections stop reconnecting', () => {
       data: undefined,
       message: 'connection closed (1006) before CONNECT was acknowledged'
     });
+    // Called after the transport error it follows, before the close.
+    expect(seenByCallback).toContain('error');
+    expect(seenByCallback).not.toContain('close');
     expect(ofType(events, 'error')).toHaveLength(1);
     expect(ofType(events, 'close')[0]).toMatchObject({
       code: 1008,
