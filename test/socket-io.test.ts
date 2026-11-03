@@ -142,6 +142,9 @@ describe('socketIoUrl', () => {
         { path: '/api/socket.io/' }
       )
     ).toBe('wss://x.test/api/socket.io/?transport=websocket&n=1&EIO=4');
+    expect(socketIoUrl('wss://x.test', {}, { path: '/realtime' })).toBe(
+      'wss://x.test/realtime/?EIO=4&transport=websocket'
+    );
   });
 });
 
@@ -424,6 +427,53 @@ describe('refused connections stop reconnecting', () => {
     });
   });
 
+  it.each([
+    ['sync', () => ({ id: 1n })],
+    ['async', async () => ({ id: 1n })]
+  ])(
+    'refuses, rather than hangs, when %s auth cannot be serialized',
+    async (_, auth) => {
+      const onConnectError = vi.fn();
+      const { socket } = setup({ auth, onConnectError });
+      last().acceptConnection();
+      last().serverSendRaw(HANDSHAKE);
+      await vi.waitFor(() => expect(socket.status).toBe('closed'));
+      expect(last().sent).toEqual([]);
+      expect(onConnectError.mock.calls[0]?.[0]).toBeInstanceOf(
+        SocketIoConnectError
+      );
+    }
+  );
+
+  it('treats a CONNECT_ERROR with an unreadable payload as a refusal', async () => {
+    const { socket, events } = setup();
+    last().acceptConnection();
+    last().serverSendRaw(HANDSHAKE);
+    await Promise.resolve();
+    last().serverSendRaw('44{not json');
+    expect(ofType(events, 'close')[0]).toMatchObject({
+      code: 1008,
+      reason: 'socket.io: connection refused'
+    });
+    expect(socket.status).toBe('closed');
+  });
+
+  it.each([1001, 1012, 1013])(
+    'retries a deliberate %i close that lands before the CONNECT ack',
+    async (code) => {
+      const { socket, events } = setup();
+      last().acceptConnection();
+      last().serverSendRaw(HANDSHAKE);
+      await Promise.resolve();
+      last().serverClose({ code });
+      expect(ofType(events, 'close')[0]).toMatchObject({
+        code,
+        willReconnect: true
+      });
+      expect(socket.status).toBe('reconnecting');
+    }
+  );
+
   it('still retries a connection that drops before the handshake', () => {
     const { socket } = setup();
     last().acceptConnection();
@@ -453,6 +503,22 @@ describe('server-side disconnects reconnect', () => {
     expect(socket.metrics.reconnects).toBe(1);
   });
 
+  it('lets the app veto reconnecting after a kick, as the README shows', async () => {
+    const io = socketIo({ socketFactory: mockSocketFactory });
+    const socket = createSocket({
+      url: 'ws://x.test',
+      ...io.options,
+      reconnect: {
+        shouldReconnect: ({ reason }) =>
+          reason !== 'socket.io: server disconnected the namespace'
+      }
+    });
+    created.push(socket);
+    await connect();
+    last().serverSendRaw('41');
+    expect(socket.status).toBe('closed');
+  });
+
   it('sends DISCONNECT before closing on socket.close()', async () => {
     const { socket } = setup({ namespace: '/admin' });
     await connect(last(), '40/admin,{"sid":"s"}');
@@ -474,6 +540,39 @@ describe('composition', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('picks up a WebSocket installed after the codec was created', () => {
+    vi.stubGlobal('WebSocket', undefined);
+    const io = socketIo();
+    vi.unstubAllGlobals();
+    vi.stubGlobal('WebSocket', MockWebSocket);
+    try {
+      const socket = createSocket({ url: 'ws://x.test', ...io.options });
+      created.push(socket);
+      last().acceptConnection();
+      last().serverSendRaw(HANDSHAKE);
+      expect(last().sent).toEqual(['40']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('names the mistake when the codec transport was replaced', () => {
+    const io = socketIo();
+    const events: KeeplineEvent[] = [];
+    const socket = createSocket({
+      url: 'ws://x.test',
+      ...io.options,
+      socketFactory: mockSocketFactory,
+      onEvent: (event) => events.push(event as KeeplineEvent)
+    });
+    created.push(socket);
+    last().acceptConnection();
+    last().serverSendRaw(HANDSHAKE);
+    expect(
+      String((ofType(events, 'decode-error')[0]?.error as Error).message)
+    ).toMatch(/Pass socketFactory to socketIo\(\), not to createSocket\(\)/);
   });
 
   it('works with useSocket: open means CONNECT acknowledged', async () => {

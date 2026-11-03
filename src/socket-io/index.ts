@@ -139,7 +139,9 @@ export interface SocketIoCodec<
 const describeEngineType = (type: string): string => {
   switch (type) {
     case '0':
-      return 'an unexpected Engine.IO handshake';
+      // The wrapper consumes the handshake, so keepline seeing one means the
+      // codec's socketFactory was replaced.
+      return 'an Engine.IO handshake: is the codec bypassed? Pass socketFactory to socketIo(), not to createSocket()';
     case '1':
       return 'an Engine.IO close';
     case '2':
@@ -186,20 +188,15 @@ export const socketIo = <
   };
 
   const createRaw = config.socketFactory;
-  // Without a WebSocket global (SSR) and without a factory, provide none, so
-  // keepline stays idle there exactly as it does without the codec.
-  const socketFactory: SocketFactory | undefined =
-    createRaw || typeof WebSocket !== 'undefined'
-      ? (url, protocols) =>
-          wrapTransport(
-            createRaw
-              ? createRaw(url, protocols)
-              : protocols === undefined
-                ? new WebSocket(url)
-                : new WebSocket(url, protocols),
-            transportConfig
-          )
-      : undefined;
+  const socketFactory: SocketFactory = (url, protocols) =>
+    wrapTransport(
+      createRaw
+        ? createRaw(url, protocols)
+        : protocols === undefined
+          ? new WebSocket(url)
+          : new WebSocket(url, protocols),
+      transportConfig
+    );
 
   const decode = (data: RawData): SocketIoMessage<TListen> => {
     if (typeof data !== 'string') {
@@ -283,12 +280,19 @@ export const socketIo = <
     }
   };
 
-  const options: SocketIoSocketOptions<TListen, TEmit> = {
-    decode,
-    encode,
-    schema
-  };
-  if (socketFactory) options.socketFactory = socketFactory;
+  const options = { decode, encode, schema } as SocketIoSocketOptions<
+    TListen,
+    TEmit
+  >;
+  // Read when the options are spread, not when the codec is created. Without
+  // a WebSocket global (SSR) and without a factory there is none, so keepline
+  // stays idle exactly as it does without the codec; a WebSocket installed
+  // after `socketIo()` — a polyfill, a test mock — is still picked up.
+  Object.defineProperty(options, 'socketFactory', {
+    enumerable: true,
+    get: () =>
+      createRaw || typeof WebSocket !== 'undefined' ? socketFactory : undefined
+  });
 
   return {
     options,
@@ -303,7 +307,7 @@ export const socketIo = <
 };
 
 export interface SocketIoUrlOptions {
-  /** Server path. Default `'/socket.io/'`, the Socket.IO default. */
+  /** The server's `path` option. Default `'/socket.io/'`. */
   path?: string;
 }
 
@@ -326,7 +330,8 @@ export const socketIoUrl = (
   );
   if (url.protocol === 'http:') url.protocol = 'ws:';
   else if (url.protocol === 'https:') url.protocol = 'wss:';
-  url.pathname = path;
+  // Engine.IO matches its path with a trailing slash, as socket.io-client sends.
+  url.pathname = path.endsWith('/') ? path : `${path}/`;
   for (const [key, value] of Object.entries(query)) {
     if (value === undefined || value === null) continue;
     url.searchParams.set(key, String(value));

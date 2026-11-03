@@ -1,11 +1,11 @@
 import { KeeplineError } from '../core/errors';
 import type { WebSocketBinaryType, WebSocketLike } from '../core/types';
-import { PacketType, namespacePrefix, parsePacket } from './parser';
+import { PacketType, namespacePrefix, parseHeader } from './parser';
 
 /** Close code reported when the server refuses the Socket.IO CONNECT. */
 export const REFUSED_CLOSE_CODE = 1008;
 
-/** Payload of a Socket.IO CONNECT_ERROR (`44`) packet. */
+/** Payload of a Socket.IO CONNECT_ERROR (`44`) packet, or a failed `auth`. */
 export class SocketIoConnectError extends KeeplineError {
   /** The `data` field of the CONNECT_ERROR payload, if the server sent one. */
   readonly data: unknown;
@@ -33,12 +33,14 @@ type Listener = (event: unknown) => void;
 type Phase =
   /** Waiting for Engine.IO's `0` handshake. */
   | 'handshake'
-  /** Handshake done; resolving `auth` and/or awaiting the CONNECT ack. */
-  | 'connecting'
+  /** Handshake done; resolving `auth`. Nothing sent yet. */
+  | 'authorizing'
+  /** CONNECT sent; the server has not answered it yet. */
+  | 'awaiting-ack'
   /** CONNECT acknowledged. keepline has seen `open`. */
   | 'connected'
-  /** This wrapper has reported its own close and detached. */
-  | 'terminated';
+  /** Closed and detached — reported, or closed by keepline itself. */
+  | 'done';
 
 interface CloseEventShape {
   code: number;
@@ -50,11 +52,20 @@ const CONNECTING = 0;
 const OPEN = 1;
 const CLOSED = 3;
 
-const isPromiseLike = <T>(value: unknown): value is PromiseLike<T> =>
-  typeof (value as PromiseLike<T> | null)?.then === 'function';
+const isPromiseLike = (value: unknown): value is PromiseLike<unknown> =>
+  typeof (value as PromiseLike<unknown> | null)?.then === 'function';
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+/**
+ * Close codes a server sends on purpose to say "come back later". Kept as-is
+ * even before the CONNECT ack, so a restart is not mistaken for a refusal.
+ */
+const isDeliberateRetrySignal = (code: number | undefined): boolean =>
+  // Inlined rather than imported from close-codes: sharing that module would
+  // split it into its own chunk and cost the core entry bytes.
+  code === 1001 || code === 1012 || code === 1013 || code === 1014;
 
 /**
  * Wrap a raw WebSocket so keepline sees a Socket.IO session instead.
@@ -80,14 +91,12 @@ export const wrapTransport = (
   const listeners = new Map<string, Set<Listener>>();
 
   let phase: Phase = 'handshake';
-  /** `close()` was called by keepline; its close event is forwarded verbatim. */
+  /** `close()` was called by keepline; the raw close is forwarded verbatim. */
   let clientClosed = false;
-  let connectSent = false;
   let pingWindowMs = 0;
   let pingTimer: ReturnType<typeof setTimeout> | undefined;
-  /** An `error` seen while a CONNECT is pending, held until its `close`. */
-  let heldError: unknown;
-  let hasHeldError = false;
+  /** An `error` seen while awaiting the ack, held until its `close`. */
+  let heldError: { event: unknown } | undefined;
 
   const dispatch = (type: string, event: unknown): void => {
     for (const listener of [...(listeners.get(type) ?? [])]) listener(event);
@@ -100,7 +109,6 @@ export const wrapTransport = (
 
   const armPingTimer = (): void => {
     clearPingTimer();
-    if (pingWindowMs <= 0) return;
     pingTimer = setTimeout(() => {
       pingTimer = undefined;
       terminate({
@@ -111,16 +119,7 @@ export const wrapTransport = (
     }, pingWindowMs);
   };
 
-  const releaseHeldError = (): void => {
-    if (!hasHeldError) return;
-    hasHeldError = false;
-    const error = heldError;
-    heldError = undefined;
-    dispatch('error', error);
-  };
-
   const detach = (): void => {
-    raw.removeEventListener('open', onRawOpen);
     raw.removeEventListener('message', onRawMessage);
     raw.removeEventListener('error', onRawError);
     raw.removeEventListener('close', onRawClose);
@@ -128,75 +127,73 @@ export const wrapTransport = (
 
   /** Report a close keepline should act on, and drop the raw transport. */
   const terminate = (event: CloseEventShape): void => {
-    if (phase === 'terminated' || clientClosed) return;
-    phase = 'terminated';
+    if (phase === 'done') return;
+    phase = 'done';
     clearPingTimer();
     detach();
     try {
       raw.close(1000);
     } catch {
-      // Already closing or closed; the synthesized event below is the truth.
+      // Already closing or closed; the event below is what keepline acts on.
     }
-    releaseHeldError();
+    const held = heldError;
+    heldError = undefined;
+    if (held) dispatch('error', held.event);
     dispatch('close', event);
   };
 
   const refuse = (reason: string): void =>
     terminate({ code: REFUSED_CLOSE_CODE, reason, wasClean: false });
 
-  /**
-   * A server-initiated end. After the CONNECT ack it is an ordinary disconnect
-   * and is retried; in answer to a pending CONNECT it is a refusal.
-   */
-  const endSession = (code: number, reason: string): void => {
-    if (phase === 'connecting' && connectSent) {
-      refuse(`${reason} before acknowledging CONNECT`);
-      return;
-    }
-    terminate({ code, reason, wasClean: true });
-  };
-
-  const notifyConnectError = (error: SocketIoConnectError): void => {
+  const refuseWith = (error: SocketIoConnectError): void => {
     try {
       config.onConnectError?.(error);
     } catch {
       // A throwing observer must not keep a refused session alive.
     }
+    refuse(`socket.io: ${error.message}`);
+  };
+
+  const failAuth = (error: unknown): void => {
+    if (phase !== 'authorizing' || clientClosed) return;
+    refuseWith(
+      new SocketIoConnectError(
+        `auth() failed: ${errorMessage(error)}`,
+        undefined,
+        { cause: error }
+      )
+    );
   };
 
   const sendConnect = (payload: unknown): void => {
-    if (phase !== 'connecting' || clientClosed) return;
-    if (payload != null && typeof payload !== 'object') {
-      const error = new SocketIoConnectError(
-        'auth must resolve to an object, null or undefined'
-      );
-      notifyConnectError(error);
-      refuse(`socket.io: ${error.message}`);
+    // keepline may have closed or abandoned the transport while auth resolved.
+    if (phase !== 'authorizing' || clientClosed) return;
+    let frame: string;
+    try {
+      if (payload != null && typeof payload !== 'object') {
+        throw new TypeError(
+          'auth must resolve to an object, null or undefined'
+        );
+      }
+      frame =
+        payload == null
+          ? `40${prefix}`
+          : `40${prefix}${JSON.stringify(payload)}`;
+    } catch (error) {
+      failAuth(error);
       return;
     }
-    const frame =
-      payload == null ? `40${prefix}` : `40${prefix}${JSON.stringify(payload)}`;
     try {
       raw.send(frame);
     } catch {
       // The transport is going away; its close event drives recovery.
       return;
     }
-    connectSent = true;
-  };
-
-  const failAuth = (error: unknown): void => {
-    if (phase !== 'connecting' || clientClosed) return;
-    const connectError = new SocketIoConnectError(
-      `auth() failed: ${errorMessage(error)}`,
-      undefined,
-      { cause: error }
-    );
-    notifyConnectError(connectError);
-    refuse(`socket.io: ${connectError.message}`);
+    phase = 'awaiting-ack';
   };
 
   const beginConnect = (): void => {
+    phase = 'authorizing';
     const { auth } = config;
     if (typeof auth !== 'function') {
       sendConnect(auth);
@@ -209,11 +206,8 @@ export const wrapTransport = (
       failAuth(error);
       return;
     }
-    if (isPromiseLike(resolved)) {
-      Promise.resolve(resolved).then(sendConnect, failAuth);
-    } else {
-      sendConnect(resolved);
-    }
+    if (isPromiseLike(resolved)) resolved.then(sendConnect, failAuth);
+    else sendConnect(resolved);
   };
 
   const onHandshake = (frame: string): void => {
@@ -243,9 +237,20 @@ export const wrapTransport = (
       return;
     }
     pingWindowMs = pingInterval + pingTimeout;
-    phase = 'connecting';
     armPingTimer();
     beginConnect();
+  };
+
+  /**
+   * A server-initiated end. After the CONNECT ack it is an ordinary disconnect
+   * and is retried; in answer to a pending CONNECT it is a refusal.
+   */
+  const endSession = (code: number, reason: string): void => {
+    if (phase === 'awaiting-ack') {
+      refuse(`${reason} before acknowledging CONNECT`);
+      return;
+    }
+    terminate({ code, reason, wasClean: true });
   };
 
   /** Socket.IO control packets for this namespace. `false` = not handled. */
@@ -258,48 +263,44 @@ export const wrapTransport = (
     )
       return false;
 
-    let packet: ReturnType<typeof parsePacket>;
-    try {
-      packet = parsePacket(frame.slice(1));
-    } catch {
-      return false;
-    }
-    if (packet.nsp !== namespace) return false;
+    // The header is enough to route a control packet. Its JSON is parsed only
+    // where it is used, so a malformed payload cannot hide a refusal.
+    const header = parseHeader(frame.slice(1));
+    if (header.nsp !== namespace) return false;
 
     if (kind === PacketType.CONNECT) {
-      if (phase !== 'connecting' || !connectSent) return false;
+      if (phase !== 'awaiting-ack') return false;
       phase = 'connected';
       dispatch('open', { type: 'open' });
       return true;
     }
 
     if (kind === PacketType.CONNECT_ERROR) {
-      const payload = (packet.data ?? {}) as {
-        message?: unknown;
-        data?: unknown;
-      };
-      const message =
-        typeof payload.message === 'string'
-          ? payload.message
-          : 'connection refused';
-      notifyConnectError(new SocketIoConnectError(message, payload.data));
-      refuse(`socket.io: ${message}`);
+      let body: { message?: unknown; data?: unknown } = {};
+      try {
+        body = JSON.parse(header.payload) ?? {};
+      } catch {
+        // Still a refusal; just one without a readable reason.
+      }
+      refuseWith(
+        new SocketIoConnectError(
+          typeof body.message === 'string'
+            ? body.message
+            : 'connection refused',
+          body.data
+        )
+      );
       return true;
     }
 
-    // DISCONNECT: the server ended this namespace's session.
     endSession(1000, 'socket.io: server disconnected the namespace');
     return true;
   };
 
-  function onRawOpen(): void {
-    // Nothing to do: Engine.IO speaks first, with its `0` handshake.
-  }
-
   function onRawMessage(event: unknown): void {
-    if (phase === 'terminated') return;
+    if (phase === 'done' || clientClosed) return;
     const { data } = event as { data: unknown };
-    if (typeof data !== 'string' || clientClosed) {
+    if (typeof data !== 'string') {
       dispatch('message', event);
       return;
     }
@@ -330,7 +331,11 @@ export const wrapTransport = (
         // Pong (keepline never pings) and noop.
         return;
       case '4':
-        if (onControlPacket(data)) return;
+        try {
+          if (onControlPacket(data)) return;
+        } catch {
+          // Unparseable header: keepline's decode reports it by name.
+        }
         break;
     }
 
@@ -340,33 +345,38 @@ export const wrapTransport = (
   }
 
   function onRawError(event: unknown): void {
-    if (phase === 'terminated') return;
-    if (!clientClosed && phase === 'connecting' && connectSent) {
+    if (phase === 'done') return;
+    if (phase === 'awaiting-ack' && !clientClosed) {
       // keepline abandons a transport whose `error` is not followed by `close`
-      // within 50ms, and retries it as a plain error. Hold the error so the
+      // within 50ms and retries it as a plain error. Hold the error so the
       // refusal below is classified by its (synthesized) close instead.
-      heldError = event;
-      hasHeldError = true;
+      heldError = { event };
       return;
     }
     dispatch('error', event);
   }
 
   function onRawClose(event: unknown): void {
-    if (phase === 'terminated') return;
-    clearPingTimer();
+    if (phase === 'done') return;
     const close = event as Partial<CloseEventShape>;
 
-    if (!clientClosed && phase === 'connecting' && connectSent) {
+    if (
+      phase === 'awaiting-ack' &&
+      !clientClosed &&
+      !isDeliberateRetrySignal(close.code)
+    ) {
       // The server dropped the connection in answer to our CONNECT — what an
       // auth middleware that closes instead of sending `44` looks like.
       refuse('socket.io: connection closed before CONNECT was acknowledged');
       return;
     }
 
-    phase = 'terminated';
+    phase = 'done';
+    clearPingTimer();
     detach();
-    releaseHeldError();
+    const held = heldError;
+    heldError = undefined;
+    if (held) dispatch('error', held.event);
     dispatch('close', {
       code: close.code ?? 1006,
       reason: close.reason ?? '',
@@ -374,12 +384,11 @@ export const wrapTransport = (
     });
   }
 
-  raw.addEventListener('open', onRawOpen);
   raw.addEventListener('message', onRawMessage);
   raw.addEventListener('error', onRawError);
   raw.addEventListener('close', onRawClose);
 
-  const transport: WebSocketLike = {
+  return {
     CONNECTING,
     OPEN,
     CLOSING: 2,
@@ -388,7 +397,7 @@ export const wrapTransport = (
       return raw.url;
     },
     get readyState() {
-      if (phase === 'terminated') return CLOSED;
+      if (phase === 'done' && !clientClosed) return CLOSED;
       const state = raw.readyState;
       if (clientClosed || phase === 'connected') return state;
       // Open at the WebSocket layer is still connecting at the Socket.IO one.
@@ -413,11 +422,10 @@ export const wrapTransport = (
       raw.send(data);
     },
     close(code, reason) {
-      if (phase === 'terminated') return;
-      const wasConnected = phase === 'connected';
+      if (clientClosed || phase === 'done') return;
       clientClosed = true;
       clearPingTimer();
-      if (wasConnected && raw.readyState === raw.OPEN) {
+      if (phase === 'connected' && raw.readyState === raw.OPEN) {
         try {
           raw.send(`41${prefix}`);
         } catch {
@@ -436,6 +444,4 @@ export const wrapTransport = (
       listeners.get(type)?.delete(listener);
     }
   };
-
-  return transport;
 };

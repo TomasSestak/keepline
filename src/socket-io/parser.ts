@@ -39,14 +39,24 @@ export class SocketIoProtocolError extends KeeplineError {
 
 const isDigit = (code: number): boolean => code >= 48 && code <= 57;
 
+export interface SocketIoPacketHeader {
+  type: number;
+  /** Namespace, `'/'` when the packet omits it. */
+  nsp: string;
+  /** Acknowledgement id, when the sender asked for one. */
+  id?: number;
+  /** The unparsed JSON payload; empty when the packet has none. */
+  payload: string;
+}
+
 /**
- * Parse the Socket.IO part of a frame — everything after Engine.IO's `4`.
+ * Split the Socket.IO part of a frame — everything after Engine.IO's `4` —
+ * without touching its JSON.
  *
  * Format: `<type>[<attachments>-][<nsp>,][<id>][<json>]`.
  */
-export const parsePacket = (body: string): SocketIoPacket => {
-  const typeCode = body.charCodeAt(0);
-  const type = typeCode - 48;
+export const parseHeader = (body: string): SocketIoPacketHeader => {
+  const type = body.charCodeAt(0) - 48;
   if (!(type >= 0 && type <= 6)) {
     throw new SocketIoProtocolError(
       `unknown Socket.IO packet type ${JSON.stringify(body.charAt(0))}`
@@ -70,23 +80,28 @@ export const parsePacket = (body: string): SocketIoPacket => {
     index = comma === -1 ? end : end + 1;
   }
 
-  const packet: SocketIoPacket = { type, nsp };
-
   const idStart = index;
   while (index < body.length && isDigit(body.charCodeAt(index))) index += 1;
-  if (index > idStart) packet.id = Number(body.slice(idStart, index));
+  const header: SocketIoPacketHeader = {
+    type,
+    nsp,
+    payload: body.slice(index)
+  };
+  if (index > idStart) header.id = Number(body.slice(idStart, index));
+  return header;
+};
 
-  if (index < body.length) {
-    try {
-      packet.data = JSON.parse(body.slice(index));
-    } catch (error) {
-      throw new SocketIoProtocolError('malformed JSON payload', {
-        cause: error
-      });
-    }
+/** {@link parseHeader}, plus the JSON payload. */
+export const parsePacket = (body: string): SocketIoPacket => {
+  const { payload, ...packet } = parseHeader(body);
+  if (payload === '') return packet;
+  try {
+    return { ...packet, data: JSON.parse(payload) };
+  } catch (error) {
+    throw new SocketIoProtocolError('malformed JSON payload', {
+      cause: error
+    });
   }
-
-  return packet;
 };
 
 /** `40`, `40/admin,`, `42/admin,[...]` — the namespace segment of a frame. */

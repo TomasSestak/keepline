@@ -252,7 +252,7 @@ io.on(socket, 'NEW', (notification) => show(notification));
 io.emit(socket, 'markRead', id);   // queued until the server admits us
 ```
 
-The event maps use the same shape as `socket.io`'s typed events, so existing interfaces can be reused. Every inbound event is also an ordinary keepline message, `{ event, args }`, so `socket.onMessage`, `useSocketMessage` and `useLastMessage` work as usual; `message.event === 'NEW'` narrows `args`. In React, spread `io.options` into `useSocket` and pass its result to `io.emit`.
+The event maps use the same shape as `socket.io`'s typed events, so existing interfaces can be reused. Every inbound event is also an ordinary keepline message, `{ event, args }`, so `socket.onMessage`, `useSocketMessage` and `useLastMessage` work as usual; `message.event === 'NEW'` narrows `args`. In React, spread `io.options` into `useSocket` and pass its result to `io.emit`. Create the codec once (module scope or `useMemo`), not per render: the hook keeps the codec it was created with. Make `auth` a function that reads the *current* token, so it is fresh on every reconnect. With `share: true`, give each namespace its own `key`, because the namespace is not part of the URL.
 
 What it handles, per connection:
 
@@ -275,7 +275,15 @@ onClose: ({ category, willReconnect }) => {
 }
 ```
 
-A close *before* the Engine.IO handshake is still an ordinary network failure and is retried.
+A close *before* the Engine.IO handshake is still an ordinary network failure and is retried, as is a close carrying a deliberate "come back later" code (1001, 1012, 1013, 1014) even while the CONNECT is pending. Any other close in that window can't be told apart from a refusal, so it counts as one.
+
+A server-side `socket.disconnect()` is retried like any other disconnect. If your server uses it to kick clients, veto that one case, or the client reconnects straight back:
+
+```ts
+reconnect: {
+  shouldReconnect: ({ reason }) => reason !== 'socket.io: server disconnected the namespace'
+}
+```
 
 Tokens don't have to come from the browser at all: a proxy in front of the Socket.IO server can inject them into the CONNECT, in which case the client sends a bare `40` and needs no `auth` option.
 
