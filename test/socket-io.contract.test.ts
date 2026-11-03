@@ -184,7 +184,9 @@ describe('against a real socket.io v4 server', () => {
         willReconnect: false
       })
     ]);
+    expect(onConnectError).toHaveBeenCalledTimes(1);
     expect(onConnectError.mock.calls[0]?.[0]).toMatchObject({
+      reason: 'connect-error',
       message: 'unauthorized',
       data: { code: 401 }
     });
@@ -200,7 +202,8 @@ describe('against a real socket.io v4 server', () => {
       });
     });
 
-    const { socket, events } = connectClient(base);
+    const onConnectError = vi.fn<(error: SocketIoConnectError) => void>();
+    const { socket, events } = connectClient(base, { onConnectError });
 
     await expectStaysDown(socket, () => attempts);
     expect(closes(events)).toEqual([
@@ -210,10 +213,47 @@ describe('against a real socket.io v4 server', () => {
         willReconnect: false
       })
     ]);
+    expect(onConnectError).toHaveBeenCalledTimes(1);
+    expect(onConnectError.mock.calls[0]?.[0]).toMatchObject({
+      reason: 'closed-before-ack',
+      closeCode: 1006,
+      data: undefined
+    });
 
     // Credentials refreshed: the app asks again, explicitly.
     socket.reconnect();
     await vi.waitFor(() => expect(attempts).toBe(2));
+  });
+
+  it('reports the server closing the Engine.IO connection on CONNECT as a refusal', async () => {
+    let attempts = 0;
+    const { base } = await startServer({}, (io) => {
+      io.use((socket) => {
+        attempts += 1;
+        // A clean close instead of an answer: the WebSocket ends with a close
+        // frame (no status code) right after the client's `40`.
+        socket.conn.close();
+      });
+    });
+
+    const onConnectError = vi.fn<(error: SocketIoConnectError) => void>();
+    const { socket, events } = connectClient(base, { onConnectError });
+
+    await expectStaysDown(socket, () => attempts);
+    expect(closes(events)).toEqual([
+      expect.objectContaining({
+        code: 1008,
+        category: 'policy',
+        reason: 'socket.io: connection closed before CONNECT was acknowledged',
+        willReconnect: false
+      })
+    ]);
+    expect(onConnectError).toHaveBeenCalledTimes(1);
+    expect(onConnectError.mock.calls[0]?.[0]).toMatchObject({
+      reason: 'closed-before-ack',
+      closeCode: 1005,
+      message: 'connection closed (1005) before CONNECT was acknowledged'
+    });
   });
 
   it('reconnects after a server-side disconnect and re-sends CONNECT', async () => {
