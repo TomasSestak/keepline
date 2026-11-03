@@ -16,7 +16,8 @@ export default defineConfig({
     'compat/index': 'src/compat/index.ts',
     'testing/index': 'src/testing/index.ts',
     'sentry/index': 'src/sentry/index.ts',
-    'logger/index': 'src/logger/index.ts'
+    'logger/index': 'src/logger/index.ts',
+    'socket-io/index': 'src/socket-io/index.ts'
   },
   format: ['esm', 'cjs'],
   dts: true,
