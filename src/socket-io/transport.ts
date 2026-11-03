@@ -2,18 +2,69 @@ import { KeeplineError } from '../core/errors';
 import type { WebSocketBinaryType, WebSocketLike } from '../core/types';
 import { PacketType, namespacePrefix, parseHeader } from './parser';
 
-/** Close code reported when the server refuses the Socket.IO CONNECT. */
+/**
+ * Close code reported when the Socket.IO CONNECT is refused, whichever way the
+ * refusal arrived (see {@link SocketIoConnectErrorReason}). keepline classifies
+ * it as `policy` and never retries it on its own.
+ */
 export const REFUSED_CLOSE_CODE = 1008;
 
-/** Payload of a Socket.IO CONNECT_ERROR (`44`) packet, or a failed `auth`. */
-export class SocketIoConnectError extends KeeplineError {
-  /** The `data` field of the CONNECT_ERROR payload, if the server sent one. */
-  readonly data: unknown;
+/**
+ * How a Socket.IO CONNECT was refused:
+ *
+ * - `'connect-error'` — the server answered with a CONNECT_ERROR (`44`)
+ *   packet, e.g. an auth middleware's `next(new Error(...))`. `message` and
+ *   `data` are the server's.
+ * - `'auth-failed'` — the `auth` option threw, rejected, or resolved to
+ *   something that cannot be sent. Nothing reached the server; the original
+ *   error is the `cause`.
+ * - `'session-ended'` — the server ended the session (Engine.IO close `1`, or
+ *   namespace DISCONNECT `41`) instead of acknowledging the CONNECT.
+ * - `'closed-before-ack'` — the WebSocket closed after the CONNECT was sent
+ *   but before it was acknowledged: a server, gateway or proxy that rejects by
+ *   dropping the connection. `closeCode` is that close's code, the only detail
+ *   there is.
+ */
+export type SocketIoConnectErrorReason =
+  | 'connect-error'
+  | 'auth-failed'
+  | 'session-ended'
+  | 'closed-before-ack';
 
-  constructor(message: string, data?: unknown, options?: { cause?: unknown }) {
+/**
+ * A refused Socket.IO CONNECT, passed to `onConnectError` once per refusal,
+ * just before the socket closes with {@link REFUSED_CLOSE_CODE}.
+ */
+export class SocketIoConnectError extends KeeplineError {
+  /** How the CONNECT was refused. */
+  readonly reason: SocketIoConnectErrorReason;
+  /**
+   * The `data` field of the CONNECT_ERROR payload, if the server sent one.
+   * Always `undefined` unless `reason` is `'connect-error'`.
+   */
+  readonly data: unknown;
+  /**
+   * Code of the WebSocket close that ended the attempt, when `reason` is
+   * `'closed-before-ack'` (`undefined` if the close carried none). Always
+   * `undefined` otherwise.
+   */
+  readonly closeCode: number | undefined;
+
+  constructor(
+    message: string,
+    data?: unknown,
+    options?: {
+      cause?: unknown;
+      /** Default `'connect-error'`. */
+      reason?: SocketIoConnectErrorReason;
+      closeCode?: number;
+    }
+  ) {
     super(message, options);
     this.name = 'SocketIoConnectError';
+    this.reason = options?.reason ?? 'connect-error';
     this.data = data;
+    this.closeCode = options?.closeCode;
   }
 }
 
@@ -142,25 +193,30 @@ export const wrapTransport = (
     dispatch('close', event);
   };
 
-  const refuse = (reason: string): void =>
-    terminate({ code: REFUSED_CLOSE_CODE, reason, wasClean: false });
-
-  const refuseWith = (error: SocketIoConnectError): void => {
+  /**
+   * The one way a CONNECT is refused: tell the app, then close with 1008.
+   * `closeReason` defaults to the error's message.
+   */
+  const refuse = (error: SocketIoConnectError, closeReason?: string): void => {
     try {
       config.onConnectError?.(error);
     } catch {
       // A throwing observer must not keep a refused session alive.
     }
-    refuse(`socket.io: ${error.message}`);
+    terminate({
+      code: REFUSED_CLOSE_CODE,
+      reason: closeReason ?? `socket.io: ${error.message}`,
+      wasClean: false
+    });
   };
 
   const failAuth = (error: unknown): void => {
     if (phase !== 'authorizing' || clientClosed) return;
-    refuseWith(
+    refuse(
       new SocketIoConnectError(
         `auth() failed: ${errorMessage(error)}`,
         undefined,
-        { cause: error }
+        { reason: 'auth-failed', cause: error }
       )
     );
   };
@@ -247,10 +303,16 @@ export const wrapTransport = (
    */
   const endSession = (code: number, reason: string): void => {
     if (phase === 'awaiting-ack') {
-      refuse(`${reason} before acknowledging CONNECT`);
+      refuse(
+        new SocketIoConnectError(
+          `${reason} before acknowledging CONNECT`,
+          undefined,
+          { reason: 'session-ended' }
+        )
+      );
       return;
     }
-    terminate({ code, reason, wasClean: true });
+    terminate({ code, reason: `socket.io: ${reason}`, wasClean: true });
   };
 
   /** Socket.IO control packets for this namespace. `false` = not handled. */
@@ -282,7 +344,7 @@ export const wrapTransport = (
       } catch {
         // Still a refusal; just one without a readable reason.
       }
-      refuseWith(
+      refuse(
         new SocketIoConnectError(
           typeof body.message === 'string'
             ? body.message
@@ -293,7 +355,7 @@ export const wrapTransport = (
       return true;
     }
 
-    endSession(1000, 'socket.io: server disconnected the namespace');
+    endSession(1000, 'server disconnected the namespace');
     return true;
   };
 
@@ -313,7 +375,7 @@ export const wrapTransport = (
         }
         break;
       case '1':
-        endSession(1001, 'socket.io: server closed the session');
+        endSession(1001, 'server closed the session');
         return;
       case '2':
         if (data === '2') {
@@ -367,7 +429,19 @@ export const wrapTransport = (
     ) {
       // The server dropped the connection in answer to our CONNECT — what an
       // auth middleware that closes instead of sending `44` looks like.
-      refuse('socket.io: connection closed before CONNECT was acknowledged');
+      const detail =
+        close.code === undefined
+          ? ''
+          : ` (${close.code}${close.reason ? ` ${close.reason}` : ''})`;
+      refuse(
+        new SocketIoConnectError(
+          `connection closed${detail} before CONNECT was acknowledged`,
+          undefined,
+          { reason: 'closed-before-ack', closeCode: close.code }
+        ),
+        // Kept free of the transport's code, so the close reason is stable.
+        'socket.io: connection closed before CONNECT was acknowledged'
+      );
       return;
     }
 

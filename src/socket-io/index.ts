@@ -32,11 +32,12 @@ import {
   REFUSED_CLOSE_CODE,
   type SocketIoAuth,
   SocketIoConnectError,
+  type SocketIoConnectErrorReason,
   wrapTransport
 } from './transport';
 
 export { REFUSED_CLOSE_CODE, SocketIoConnectError, SocketIoProtocolError };
-export type { SocketIoAuth };
+export type { SocketIoAuth, SocketIoConnectErrorReason };
 
 /**
  * An event map, in the same shape `socket.io` uses for its typed events:
@@ -79,10 +80,17 @@ export interface SocketIoOptions {
    */
   auth?: SocketIoAuth;
   /**
-   * Called when the server refuses the CONNECT with a CONNECT_ERROR (`44`)
-   * packet — typically an auth middleware's `next(new Error(...))` — or when
-   * `auth()` fails. The socket closes with {@link REFUSED_CLOSE_CODE} either
-   * way; this is only where the server's `message`/`data` are available.
+   * Called exactly once for every refused CONNECT, just before the socket
+   * closes with {@link REFUSED_CLOSE_CODE} — so it sees every 1008 this codec
+   * reports, not only the ones with a server message. `error.reason` says how
+   * the refusal arrived: a CONNECT_ERROR (`44`) packet such as an auth
+   * middleware's `next(new Error(...))` (`'connect-error'`, with the server's
+   * `message`/`data`), a failed `auth()` (`'auth-failed'`), the server ending
+   * the session instead of acknowledging (`'session-ended'`), or the
+   * connection dropping before the acknowledgement (`'closed-before-ack'`,
+   * with `closeCode`). Closes that are retried — a network drop before the
+   * Engine.IO handshake, a 1001/1012/1013/1014 "come back later", or
+   * `socket.close()` — are not refusals and do not call it.
    */
   onConnectError?: (error: SocketIoConnectError) => void;
   /**
