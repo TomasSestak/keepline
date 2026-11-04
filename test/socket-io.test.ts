@@ -483,16 +483,66 @@ describe('refused connections stop reconnecting', () => {
   );
 
   it('treats a CONNECT_ERROR with an unreadable payload as a refusal', async () => {
-    const { socket, events } = setup();
+    const onConnectError = vi.fn();
+    const { socket, events } = setup({ onConnectError });
     last().acceptConnection();
     last().serverSendRaw(HANDSHAKE);
     await Promise.resolve();
     last().serverSendRaw('44{not json');
-    expect(ofType(events, 'close')[0]).toMatchObject({
-      code: 1008,
-      reason: 'socket.io: connection refused'
-    });
+    expect(ofType(events, 'close')).toEqual([
+      expect.objectContaining({
+        code: 1008,
+        reason: 'socket.io: connection refused',
+        willReconnect: false
+      })
+    ]);
     expect(socket.status).toBe('closed');
+    expect(onlyCall(onConnectError)).toMatchObject({
+      reason: 'connect-error',
+      message: 'connection refused',
+      data: undefined,
+      closeCode: undefined
+    });
+  });
+
+  it('treats a CONNECT_ERROR outside the CONNECT exchange as a decode-error, not a refusal', async () => {
+    const onConnectError = vi.fn();
+    const { socket, events } = setup({ onConnectError });
+    await connect();
+    last().serverSendRaw('44{"message":"late"}');
+    await vi.waitFor(() =>
+      expect(ofType(events, 'decode-error')).toHaveLength(1)
+    );
+    expect(String(ofType(events, 'decode-error')[0]?.error)).toMatch(
+      /unexpected control packet of type 4/
+    );
+    expect(socket.status).toBe('open');
+    expect(ofType(events, 'close')).toEqual([]);
+    expect(onConnectError).not.toHaveBeenCalled();
+    // The session is untouched: emits still go out.
+    socket.send({ event: 'markRead', args: [1] });
+    expect(last().sent.at(-1)).toBe('42["markRead",1]');
+  });
+
+  it('ignores a CONNECT_ERROR that arrives before the CONNECT is sent', async () => {
+    const onConnectError = vi.fn();
+    let release: (value: object) => void = () => {};
+    const { socket, events } = setup({
+      auth: () => new Promise<object>((resolve) => (release = resolve)),
+      onConnectError
+    });
+    last().acceptConnection();
+    last().serverSendRaw(HANDSHAKE);
+    last().serverSendRaw('44{"message":"stray"}');
+    await vi.waitFor(() =>
+      expect(ofType(events, 'decode-error')).toHaveLength(1)
+    );
+    expect(onConnectError).not.toHaveBeenCalled();
+
+    release({ token: 't' });
+    await vi.waitFor(() => expect(last().sent).toEqual(['40{"token":"t"}']));
+    last().serverSendRaw('40{"sid":"s1"}');
+    expect(socket.status).toBe('open');
   });
 
   it.each([1001, 1012, 1013, 1014])(
@@ -610,6 +660,165 @@ describe('refused connections stop reconnecting', () => {
     last().serverClose({ code: 1006 });
     expect(socket.status).toBe('reconnecting');
     expect(onConnectError).not.toHaveBeenCalled();
+  });
+
+  it('still retries a connection that drops while an async auth() resolves', async () => {
+    const onConnectError = vi.fn();
+    let release: (value: object) => void = () => {};
+    const { socket, events } = setup({
+      auth: () => new Promise<object>((resolve) => (release = resolve)),
+      onConnectError
+    });
+    last().acceptConnection();
+    last().serverSendRaw(HANDSHAKE);
+    last().serverClose({ code: 1006 });
+    expect(ofType(events, 'close')).toEqual([
+      expect.objectContaining({ code: 1006, willReconnect: true })
+    ]);
+    expect(socket.status).toBe('reconnecting');
+
+    // auth() settling late neither sends on the dead transport nor refuses.
+    release({ token: 't' });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(MockWebSocket.instances[0]?.sent).toEqual([]);
+    expect(onConnectError).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+  });
+
+  it.each([
+    ['before the Engine.IO handshake', 1008, false],
+    ['before the Engine.IO handshake', 4401, false],
+    ['while an async auth() resolves', 4403, true],
+    ['while an async auth() resolves', 3000, true],
+    ['while an async auth() resolves', 4001, true]
+  ])(
+    'treats an auth-failure close %s (%i) as a refusal',
+    async (_, code, pastHandshake) => {
+      const onConnectError = vi.fn();
+      const { socket, events } = setup({
+        auth: () => new Promise<object>(() => {}),
+        onConnectError
+      });
+      last().acceptConnection();
+      if (pastHandshake) last().serverSendRaw(HANDSHAKE);
+      last().serverClose({ code, reason: 'rejected' });
+
+      expect(onlyCall(onConnectError)).toMatchObject({
+        reason: 'closed-before-ack',
+        closeCode: code,
+        data: undefined,
+        message: `connection closed (${code} rejected) before CONNECT was acknowledged`
+      });
+      expect(ofType(events, 'close')).toEqual([
+        expect.objectContaining({
+          code: REFUSED_CLOSE_CODE,
+          category: 'policy',
+          reason:
+            'socket.io: connection closed before CONNECT was acknowledged',
+          willReconnect: false
+        })
+      ]);
+      expect(socket.status).toBe('closed');
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(MockWebSocket.instances).toHaveLength(1);
+      expect(MockWebSocket.instances[0]?.sent).toEqual([]);
+    }
+  );
+
+  it('does not report an auth-failure close the app initiated as a refusal', async () => {
+    const onConnectError = vi.fn();
+    const { socket, events } = setup({ onConnectError });
+    last().acceptConnection();
+    // A wrapper close() reaches the raw socket with the app's own code.
+    socket.close(4401, 'logged out');
+    await vi.waitFor(() => expect(socket.status).toBe('closed'));
+    expect(onConnectError).not.toHaveBeenCalled();
+    expect(ofType(events, 'close')[0]).toMatchObject({ code: 4401 });
+  });
+
+  it.each([
+    [
+      'connect-error',
+      (ws: MockWebSocket) => ws.serverSendRaw('44{"message":"no"}')
+    ],
+    ['session-ended', (ws: MockWebSocket) => ws.serverSendRaw('1')],
+    ['closed-before-ack', (ws: MockWebSocket) => ws.serverClose()]
+  ])(
+    'delivers a transport error held before a %s refusal first',
+    async (reason, refuse) => {
+      vi.useFakeTimers();
+      const onConnectError = vi.fn();
+      const { socket, events } = setup({ onConnectError });
+      last().acceptConnection();
+      last().serverSendRaw(HANDSHAKE);
+      await Promise.resolve();
+      last().serverError();
+      vi.advanceTimersByTime(200);
+      expect(ofType(events, 'error')).toEqual([]);
+      refuse(last());
+
+      expect(ofType(events, 'error')).toHaveLength(1);
+      expect(onlyCall(onConnectError).reason).toBe(reason);
+      const seen = events.map((event) => event.type);
+      expect(seen.indexOf('error')).toBeLessThan(seen.indexOf('close'));
+      expect(socket.status).toBe('closed');
+    }
+  );
+});
+
+describe('reconnecting from onConnectError', () => {
+  it('runs after keepline has settled the refusal, so reconnect() starts a clean attempt', async () => {
+    const seen: Array<{ status: string; closes: number[] }> = [];
+    let socketRef: ReturnType<typeof setup>['socket'] | undefined;
+    const onClose = vi.fn();
+    const onConnectError = vi.fn(() => {
+      const socket = socketRef as ReturnType<typeof setup>['socket'];
+      seen.push({
+        status: socket.status,
+        closes: ofType(events, 'close').map((close) => close.code)
+      });
+      if (seen.length === 1) socket.reconnect();
+    });
+    const io = socketIo<ServerEvents, ClientEvents>({
+      socketFactory: mockSocketFactory,
+      onConnectError
+    });
+    const events: KeeplineEvent[] = [];
+    const socket = createSocket({
+      url: 'ws://example.test/socket.io/?EIO=4&transport=websocket',
+      reconnect: { backoff: constantBackoff(10) },
+      ...io.options,
+      onClose,
+      onEvent: (event) => events.push(event as KeeplineEvent)
+    });
+    socketRef = socket;
+    created.push(socket);
+
+    await awaitAck();
+    last().serverClose({ code: 1006 });
+
+    // The refused attempt is fully reported before the callback runs.
+    expect(seen[0]).toEqual({ status: 'closed', closes: [1008] });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose.mock.calls[0]?.[0]).toMatchObject({
+      code: 1008,
+      willReconnect: false
+    });
+    expect(socket.metrics.failedAttempts).toBe(1);
+
+    // reconnect() from inside the callback opens one new attempt at once.
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(socket.status).toBe('connecting');
+
+    // A second refusal is reported the same way and settles closed.
+    await awaitAck();
+    last().serverSendRaw('44{"message":"still no"}');
+    expect(seen[1]).toEqual({ status: 'closed', closes: [1008, 1008] });
+    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(socket.status).toBe('closed');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(MockWebSocket.instances).toHaveLength(2);
   });
 });
 
