@@ -80,18 +80,28 @@ export interface SocketIoOptions {
    */
   auth?: SocketIoAuth;
   /**
-   * Called exactly once for every refused CONNECT, just before the socket
-   * closes with {@link REFUSED_CLOSE_CODE} — so it sees every 1008 this codec
-   * reports, not only the ones with a server message. `error.reason` says how
-   * the refusal arrived: a CONNECT_ERROR (`44`) packet such as an auth
-   * middleware's `next(new Error(...))` (`'connect-error'`, with the server's
+   * Called exactly once for every refused CONNECT, right after keepline has
+   * processed the {@link REFUSED_CLOSE_CODE} close (`onClose` has run and the
+   * socket has settled, normally `closed`) — so it sees every 1008 this codec reports, not only
+   * the ones with a server message. `error.reason` says how the refusal
+   * arrived: a CONNECT_ERROR (`44`) packet such as an auth middleware's
+   * `next(new Error(...))` (`'connect-error'`, with the server's
    * `message`/`data`), a failed `auth()` (`'auth-failed'`), the server ending
    * the session instead of acknowledging (`'session-ended'`), or the
-   * connection dropping before the acknowledgement (`'closed-before-ack'`,
-   * with `closeCode`). Closes that are retried — a drop before the CONNECT is
-   * sent (before the Engine.IO handshake, or while `auth()` resolves), a
-   * 1001/1012/1013/1014 "come back later" — and `socket.close()` are not
-   * refusals and do not call it.
+   * connection closing before the acknowledgement (`'closed-before-ack'`,
+   * with `closeCode`).
+   *
+   * Only `'connect-error'` is certainly the server's answer. A
+   * `'closed-before-ack'` can also be a network drop right after the CONNECT,
+   * so branch on `error.reason` before treating a call as "credentials
+   * rejected". `socket.reconnect()` from here starts a new attempt at once,
+   * without backoff; call it once something has changed (fresh credentials),
+   * not unconditionally.
+   *
+   * Not refusals, and not reported here: a close before the CONNECT is sent
+   * (before the Engine.IO handshake, or while `auth()` resolves) unless its
+   * code rejects credentials (1008, 3000, 4001, 4401, 4403); a
+   * 1001/1012/1013/1014 "come back later"; `socket.close()`.
    */
   onConnectError?: (error: SocketIoConnectError) => void;
   /**

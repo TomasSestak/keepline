@@ -1,0 +1,11 @@
+---
+"keepline": patch
+---
+
+`keepline/socket-io`: follow-ups to the 0.7.1 `onConnectError` change.
+
+- **A gateway rejecting the connection before the CONNECT is now a refusal.** A close with an auth-failure code (`1008`, `3000`, `4001`, `4401`, `4403`) that arrives before the CONNECT is sent (before the Engine.IO handshake, or while an async `auth()` resolves) used to pass through unreported: keepline did not retry it and `onConnectError` never ran. It now calls `onConnectError` once with `reason: 'closed-before-ack'` and the code in `closeCode`, and closes with `1008` like every other refusal, so the README's `category === 'policy'` refresh handler catches it too. Other pre-CONNECT closes are unchanged: retried when their code is retryable.
+- **A stray `44` no longer kills an established session.** A CONNECT_ERROR for this namespace is a refusal only in answer to the CONNECT. Before the CONNECT is sent or after it was acknowledged, it is reported as a `decode-error` and the session stays up, like any other out-of-turn control packet.
+- **`onConnectError` now runs after keepline has processed the `1008` close**, not just before it: `onClose` has already run and `status` has settled (normally `'closed'`). A `socket.reconnect()` from inside the callback therefore starts a clean attempt, and the refused attempt is still reported (close event, `onClose`, `metrics.failedAttempts`). Before this, keepline still considered the refused attempt to be connecting, so a reconnect from the callback discarded it unreported. `reconnect()` never waits for backoff, so call it from the callback only once something has changed (such as fresh credentials).
+
+**If you upgraded to 0.7.1 with an existing `onConnectError` handler:** 0.7.1 made it fire for more than a `44` CONNECT_ERROR or a failed `auth()`. It also fires when the server ends the session before acknowledging (`'session-ended'`) and when the connection closes before the acknowledgement (`'closed-before-ack'`), which can be a network drop right after the CONNECT and not a rejection. If your handler should run only when the server rejects the client (for example to log the user out or show a login error), check `error.reason === 'connect-error'` first.
