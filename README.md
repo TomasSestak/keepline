@@ -262,12 +262,12 @@ What it handles, per connection:
 | `40{"sid":…}` | server | CONNECT acknowledged. Only now does keepline report `open` and flush its queue. |
 | `2` | server | Ping, answered with `3` at once. If none arrives within `pingInterval + pingTimeout`, the connection is closed as `1006 socket.io: ping timeout` and retried. |
 | `42[name, …args]`, `42/ns,[…]` | both | Events. |
-| `44{"message":…}` | server | CONNECT_ERROR: a refusal, see below. |
+| `44{"message":…}` | server | CONNECT_ERROR: in answer to the CONNECT, a refusal, see below. Out of turn (before the CONNECT is sent, or after the ack), a `decode-error`; the session is left alone. |
 | `41`, `1` | server | Namespace disconnect / Engine.IO close: after the ack, an ordinary disconnect, closed as `1000`/`1001` and retried; in answer to the CONNECT, a refusal. |
 
 `status === 'open'` therefore means the server acknowledged the CONNECT, not merely that the WebSocket opened, and keepline's `connectTimeoutMs` covers the whole handshake. Liveness comes from the server's own ping cadence, so leave `heartbeat` and `staleAfterMs` unset.
 
-**Refused connections are not retried.** A server refuses with a `44` CONNECT_ERROR (an auth middleware calling `next(new Error(...))`), by ending the session (`1` or `41`) instead of acknowledging, or by closing the WebSocket right after the client's `40`, typically with a bare `1006`. All are reported as a `1008` close (`category: 'policy'`, exported as `REFUSED_CLOSE_CODE`), which keepline never retries, so an expired token does not turn into a reconnect loop. A throwing `auth()` is treated the same way. The socket settles `closed`, and the app calls `socket.reconnect()` once it has fresh credentials:
+**Refused connections are not retried.** A server refuses with a `44` CONNECT_ERROR (an auth middleware calling `next(new Error(...))`), by ending the session (`1` or `41`) instead of acknowledging, or by closing the WebSocket right after the client's `40`, typically with a bare `1006`. A gateway or proxy in front of it may also turn the connection away before the `40` is sent, by closing with an auth-failure code (`1008`, `3000`, `4001`, `4401` or `4403`). All are reported as a `1008` close (`category: 'policy'`, exported as `REFUSED_CLOSE_CODE`), which keepline never retries, so an expired token does not turn into a reconnect loop. A throwing `auth()` is treated the same way. The socket settles `closed`, and the app calls `socket.reconnect()` once it has fresh credentials:
 
 ```ts
 onClose: ({ category, willReconnect }) => {
@@ -275,14 +275,16 @@ onClose: ({ category, willReconnect }) => {
 }
 ```
 
-`onConnectError` is called exactly once for every one of these refusals, just before the `1008` close, so it is the one place to report "connection refused". Its `SocketIoConnectError` says how the refusal arrived in `error.reason`:
+`onConnectError` is called exactly once for every one of these refusals, right after keepline has processed the `1008` close (`onClose` has run and `status` is `'closed'`), so it is the one place to report "connection refused". Its `SocketIoConnectError` says how the refusal arrived in `error.reason`:
 
 | `reason` | What happened | Detail |
 | --- | --- | --- |
 | `'connect-error'` | `44` CONNECT_ERROR | The server's `message`, and its `data` |
 | `'auth-failed'` | `auth()` threw, rejected or returned something unsendable; nothing was sent | The original error as `cause` |
 | `'session-ended'` | The server sent `1` or `41` instead of acknowledging | — |
-| `'closed-before-ack'` | The WebSocket closed after the `40`, before the ack | `closeCode`, also in the message |
+| `'closed-before-ack'` | The WebSocket closed after the `40`, before the ack; or before the `40`, with an auth-failure code | `closeCode`, also in the message |
+
+Only `'connect-error'` is certainly the server rejecting the client. A `'closed-before-ack'` with `closeCode: 1006` is what a rejecting proxy looks like, and also what a network drop right after the `40` looks like. If your handler logs the user out or shows a login error, branch on `error.reason` and do that only for the server's own rejections:
 
 ```ts
 onConnectError: (error) => {
@@ -291,7 +293,9 @@ onConnectError: (error) => {
 }
 ```
 
-A close *before* the CONNECT is sent (before the Engine.IO handshake, or while an async `auth()` resolves) is still an ordinary network failure and is retried, as is a close carrying a deliberate "come back later" code (1001, 1012, 1013, 1014) even while the CONNECT is pending. Any other close in that window can't be told apart from a refusal, so it counts as one.
+`socket.reconnect()` works from inside the callback and starts a new attempt immediately, with no backoff, just as it does from `onClose`. Call it once something has changed, such as fresh credentials, not on every refusal, or a server that keeps refusing becomes a tight loop.
+
+A close *before* the CONNECT is sent (before the Engine.IO handshake, or while an async `auth()` resolves) is handled like any other dropped connection: retried when its code is retryable (a bare `1006`, for instance), not retried when keepline's close-code policy says it is not. The exception is an auth-failure code (`1008`, `3000`, `4001`, `4401`, `4403`), which is a refusal as described above. A close carrying a deliberate "come back later" code (1001, 1012, 1013, 1014) is retried even while the CONNECT is pending. Any other close in that window can't be told apart from a refusal, so it counts as one.
 
 A server-side `socket.disconnect()` is retried like any other disconnect. If your server uses it to kick clients, veto that one case, or the client reconnects straight back:
 

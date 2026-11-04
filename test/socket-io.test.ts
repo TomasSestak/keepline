@@ -423,9 +423,11 @@ describe('refused connections stop reconnecting', () => {
       data: undefined,
       message: 'connection closed (1006) before CONNECT was acknowledged'
     });
-    // Called after the transport error it follows, before the close.
-    expect(seenByCallback).toContain('error');
-    expect(seenByCallback).not.toContain('close');
+    // Called after the transport error it follows and the 1008 close.
+    expect(seenByCallback.indexOf('error')).toBeGreaterThanOrEqual(0);
+    expect(seenByCallback.indexOf('error')).toBeLessThan(
+      seenByCallback.indexOf('close')
+    );
     expect(ofType(events, 'error')).toHaveLength(1);
     expect(ofType(events, 'close')[0]).toMatchObject({
       code: 1008,
@@ -528,7 +530,10 @@ describe('refused connections stop reconnecting', () => {
     const onConnectError = vi.fn();
     let release: (value: object) => void = () => {};
     const { socket, events } = setup({
-      auth: () => new Promise<object>((resolve) => (release = resolve)),
+      auth: () =>
+        new Promise<object>((resolve) => {
+          release = resolve;
+        }),
       onConnectError
     });
     last().acceptConnection();
@@ -666,7 +671,10 @@ describe('refused connections stop reconnecting', () => {
     const onConnectError = vi.fn();
     let release: (value: object) => void = () => {};
     const { socket, events } = setup({
-      auth: () => new Promise<object>((resolve) => (release = resolve)),
+      auth: () =>
+        new Promise<object>((resolve) => {
+          release = resolve;
+        }),
       onConnectError
     });
     last().acceptConnection();
@@ -770,10 +778,8 @@ describe('refused connections stop reconnecting', () => {
 describe('reconnecting from onConnectError', () => {
   it('runs after keepline has settled the refusal, so reconnect() starts a clean attempt', async () => {
     const seen: Array<{ status: string; closes: number[] }> = [];
-    let socketRef: ReturnType<typeof setup>['socket'] | undefined;
     const onClose = vi.fn();
     const onConnectError = vi.fn(() => {
-      const socket = socketRef as ReturnType<typeof setup>['socket'];
       seen.push({
         status: socket.status,
         closes: ofType(events, 'close').map((close) => close.code)
@@ -792,7 +798,6 @@ describe('reconnecting from onConnectError', () => {
       onClose,
       onEvent: (event) => events.push(event as KeeplineEvent)
     });
-    socketRef = socket;
     created.push(socket);
 
     await awaitAck();

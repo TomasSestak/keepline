@@ -20,10 +20,13 @@ export const REFUSED_CLOSE_CODE = 1008;
  *   error is the `cause`.
  * - `'session-ended'` — the server ended the session (Engine.IO close `1`, or
  *   namespace DISCONNECT `41`) instead of acknowledging the CONNECT.
- * - `'closed-before-ack'` — the WebSocket closed after the CONNECT was sent
- *   but before it was acknowledged: a server, gateway or proxy that rejects by
- *   dropping the connection. `closeCode` is that close's code, the only detail
- *   there is.
+ * - `'closed-before-ack'` — the WebSocket closed before the CONNECT was
+ *   acknowledged: after it was sent, with any code but a "come back later"
+ *   one (1001/1012/1013/1014) — a server, gateway or proxy that rejects by
+ *   dropping the connection, though also a network drop at that moment; or
+ *   before it was sent, with an auth-failure code (1008, 3000, 4001, 4401,
+ *   4403) — a gateway or proxy rejecting the upgrade. `closeCode` is that
+ *   close's code, the only detail there is.
  */
 export type SocketIoConnectErrorReason =
   | 'connect-error'
@@ -33,7 +36,7 @@ export type SocketIoConnectErrorReason =
 
 /**
  * A refused Socket.IO CONNECT, passed to `onConnectError` once per refusal,
- * just before the socket closes with {@link REFUSED_CLOSE_CODE}.
+ * right after keepline has processed the {@link REFUSED_CLOSE_CODE} close.
  */
 export class SocketIoConnectError extends KeeplineError {
   /** How the CONNECT was refused. */
@@ -119,6 +122,18 @@ const isDeliberateRetrySignal = (code: number | undefined): boolean =>
   code === 1001 || code === 1012 || code === 1013 || code === 1014;
 
 /**
+ * Close codes that reject credentials — core's `isAuthFailure`, inlined for
+ * the same reason. Before the CONNECT is sent, only these are a refusal: a
+ * gateway or proxy turning the upgrade away before Socket.IO is involved.
+ */
+const isAuthFailureClose = (code: number | undefined): boolean =>
+  code === 1008 ||
+  code === 3000 ||
+  code === 4001 ||
+  code === 4401 ||
+  code === 4403;
+
+/**
  * Wrap a raw WebSocket so keepline sees a Socket.IO session instead.
  *
  * The wrapper owns everything below the application layer: it answers the
@@ -178,12 +193,9 @@ export const wrapTransport = (
 
   /**
    * Report a close keepline should act on, and drop the raw transport.
-   * `beforeClose` runs once the transport is released, right before the close.
+   * `afterClose` runs once keepline has processed the close.
    */
-  const terminate = (
-    event: CloseEventShape,
-    beforeClose?: () => void
-  ): void => {
+  const terminate = (event: CloseEventShape, afterClose?: () => void): void => {
     if (phase === 'done') return;
     phase = 'done';
     clearPingTimer();
@@ -196,13 +208,19 @@ export const wrapTransport = (
     const held = heldError;
     heldError = undefined;
     if (held) dispatch('error', held.event);
-    beforeClose?.();
-    dispatch('close', event);
+    try {
+      dispatch('close', event);
+    } finally {
+      afterClose?.();
+    }
   };
 
   /**
-   * The one way a CONNECT is refused: tell the app, then close with 1008.
-   * `closeReason` defaults to the error's message.
+   * The one way a CONNECT is refused: close with 1008, then tell the app.
+   * Telling it only after keepline has settled the close means the app sees
+   * the socket `closed`, and a `reconnect()` from the callback starts a clean
+   * attempt instead of abandoning one keepline still thinks is connecting.
+   * `closeReason` defaults to `socket.io: ${error.message}`.
    */
   const refuse = (error: SocketIoConnectError, closeReason?: string): void =>
     terminate(
@@ -215,7 +233,7 @@ export const wrapTransport = (
         try {
           config.onConnectError?.(error);
         } catch {
-          // A throwing observer must not keep a refused session alive.
+          // A throwing observer must not affect the closed session.
         }
       }
     );
@@ -348,6 +366,9 @@ export const wrapTransport = (
     }
 
     if (kind === PacketType.CONNECT_ERROR) {
+      // Only an answer to our CONNECT is a refusal. Out of turn it is a
+      // protocol error, reported by keepline's decode like a stray `40`.
+      if (phase !== 'awaiting-ack') return false;
       let body: { message?: unknown; data?: unknown } = {};
       try {
         body = JSON.parse(header.payload) ?? {};
@@ -432,13 +453,15 @@ export const wrapTransport = (
     if (phase === 'done') return;
     const close = event as Partial<CloseEventShape>;
 
-    if (
-      phase === 'awaiting-ack' &&
+    // In answer to our CONNECT, any close but "come back later" is a refusal:
+    // what an auth middleware that drops instead of sending `44` looks like.
+    // Before the CONNECT is sent, only a close that rejects credentials is.
+    const refused =
       !clientClosed &&
-      !isDeliberateRetrySignal(close.code)
-    ) {
-      // The server dropped the connection in answer to our CONNECT — what an
-      // auth middleware that closes instead of sending `44` looks like.
+      (phase === 'awaiting-ack'
+        ? !isDeliberateRetrySignal(close.code)
+        : phase !== 'connected' && isAuthFailureClose(close.code));
+    if (refused) {
       const detail =
         close.code === undefined
           ? ''
@@ -455,13 +478,7 @@ export const wrapTransport = (
       return;
     }
 
-    phase = 'done';
-    clearPingTimer();
-    detach();
-    const held = heldError;
-    heldError = undefined;
-    if (held) dispatch('error', held.event);
-    dispatch('close', {
+    terminate({
       code: close.code ?? 1006,
       reason: close.reason ?? '',
       wasClean: close.wasClean ?? false
