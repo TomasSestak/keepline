@@ -82,7 +82,7 @@ export interface SocketIoOptions {
   /**
    * Called exactly once for every refused CONNECT, right after keepline has
    * processed the {@link REFUSED_CLOSE_CODE} close (`onClose` has run and the
-   * socket is `closed`) — so it sees every 1008 this codec reports, not only
+   * socket has settled, normally `closed`) — so it sees every 1008 this codec reports, not only
    * the ones with a server message. `error.reason` says how the refusal
    * arrived: a CONNECT_ERROR (`44`) packet such as an auth middleware's
    * `next(new Error(...))` (`'connect-error'`, with the server's

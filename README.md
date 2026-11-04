@@ -275,7 +275,7 @@ onClose: ({ category, willReconnect }) => {
 }
 ```
 
-`onConnectError` is called exactly once for every one of these refusals, right after keepline has processed the `1008` close (`onClose` has run and `status` is `'closed'`), so it is the one place to report "connection refused". Its `SocketIoConnectError` says how the refusal arrived in `error.reason`:
+`onConnectError` is called exactly once for every one of these refusals, right after keepline has processed the `1008` close (`onClose` has run and `status` has settled, normally `'closed'`), so it is the one place to report "connection refused". Its `SocketIoConnectError` says how the refusal arrived in `error.reason`:
 
 | `reason` | What happened | Detail |
 | --- | --- | --- |
